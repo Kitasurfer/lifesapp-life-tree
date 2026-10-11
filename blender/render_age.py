@@ -43,7 +43,7 @@ def parse_args():
     p.add_argument("--sun", type=float, default=4.5)
     p.add_argument("--sun-from", type=float, nargs=3, default=(-40.0, 12.0, 30.0),
                    help="sun position (it shines towards the tree); behind-left makes leaves glow")
-    p.add_argument("--rim", type=float, default=180000.0, help="mint back light power, W")
+    p.add_argument("--rim", type=float, default=110000.0, help="mint back light power, W")
     p.add_argument("--fill", type=float, default=12000.0)
     return p.parse_args(argv)
 
@@ -259,6 +259,11 @@ def main() -> None:
 
     ground = bpy.data.meshes.new("Ground")
     ground.from_pydata([(-200, -200, 0), (200, -200, 0), (200, 200, 0), (-200, 200, 0)], [], [(0, 1, 2, 3)])
+    soil = bpy.data.materials.new("Soil")  # a white catcher bounces sun + rim up onto the bark
+    soil.use_nodes = True
+    soil.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.03, 0.035, 0.025, 1.0)
+    soil.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 1.0
+    ground.materials.append(soil)
     ground_obj = bpy.data.objects.new("Ground", ground)
     ground_obj.is_shadow_catcher = True
     scene.collection.objects.link(ground_obj)

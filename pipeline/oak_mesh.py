@@ -3,8 +3,8 @@
 * tubes  — every branch chain becomes one tube (rings along the polyline, parallel-transport
            frames), UVs in metres of bark so the texture keeps its physical size at every age;
            the trunk gets a lobed root flare and a few surface roots.
-* leaves — clumps of oak-leaf cards around each growing tip; leaf size is the real 7–14 cm at
-           every age (only the tree scales, leaves don't).
+* leaves — oak-leaf cards clustered on the scan's real twig ends (scaled to the age); leaf size is
+           the real 7–14 cm at every age (only the tree scales, leaves don't).
 
 Blender (blender/render_age.py) just turns these arrays into meshes.
 """
@@ -134,34 +134,42 @@ class LeafCard:
     aspect: float            # width / length
 
 
-def leaf_quads(chains: list, age: float, cards: list, rng: np.random.Generator,
-               leaf_scale: float = 1.0) -> MeshData:
-    tips = [c for c in chains if c.ends_in_tip]
-    if not tips or age <= 0:
+def twig_anchors(skel: og.Skeleton, scale: float):
+    """Where the leaves hang: the real twig ends of the scanned oak, scaled to this age.
+
+    Using the scan's own twig tips (not spheres around the few tips a young framework has) keeps
+    the crown shaped like this oak at every age — a young crown is the future crown, smaller —
+    and avoids "broccoli" puffs.
+    """
+    has_child = np.zeros(len(skel.parent), bool)
+    has_child[skel.parent[skel.parent >= 0]] = True
+    tip = ~has_child
+    ends = (skel.start[tip] + skel.axis[tip] * skel.length[tip, None]) * scale
+    return ends, skel.axis[tip]
+
+
+def leaf_quads(anchors: np.ndarray, anchor_dirs: np.ndarray, age: float, scale: float, cards: list,
+               rng: np.random.Generator, leaf_scale: float = 1.0) -> MeshData:
+    if age <= 0 or not len(anchors):
         return MeshData(np.zeros((0, 3)), np.zeros((0, 4), int), np.zeros((0, 2)), np.zeros(0))
-    ends = np.array([c.points[-1] for c in tips])
-    dirs = np.array([c.points[-1] - c.points[-2] for c in tips])
-    dirs /= np.maximum(np.linalg.norm(dirs, axis=1, keepdims=True), 1e-9)
-
     total = LEAVES_AT_FULL_AGE * og.height_fraction(age) ** 2
-    per_tip = int(np.clip(total / len(tips), 10, 1200))
-    crown = np.ptp(ends[:, :2], axis=0).max() if len(ends) > 1 else 0.6
-    clump_r = float(np.clip(1.15 * crown / np.sqrt(len(tips)), 0.12, 1.4))
+    per_anchor = max(2, int(round(total / len(anchors))))
+    cluster_r = max(0.38 * scale, 0.12)
 
-    n = per_tip * len(tips)
-    owner = np.repeat(np.arange(len(tips)), per_tip)
+    n = per_anchor * len(anchors)
+    owner = np.repeat(np.arange(len(anchors)), per_anchor)
+    dirs = anchor_dirs[owner]
     gauss = rng.normal(size=(n, 3))
     gauss /= np.linalg.norm(gauss, axis=1, keepdims=True)
-    radial = rng.uniform(0, 1, n) ** (1 / 3) * clump_r
-    offset = gauss * radial[:, None] * np.array([1.0, 1.0, 0.7])
-    centre = ends[owner] + dirs[owner] * clump_r * 0.35
-    stalk = centre + offset
+    offset = gauss * (rng.uniform(0, 1, n) ** (1 / 3) * cluster_r)[:, None] * np.array([1.0, 1.0, 0.75])
+    # Leaves sit along the last part of the twig, not only at its very end.
+    stalk = anchors[owner] - dirs * (rng.uniform(0.0, 1.2, n) * cluster_r)[:, None] + offset
 
     up = np.array([0.0, 0.0, 1.0])
     outward = offset / np.maximum(np.linalg.norm(offset, axis=1, keepdims=True), 1e-9)
-    normal = up + 0.55 * outward + 0.6 * rng.normal(size=(n, 3))
+    normal = up + 0.5 * outward + 0.6 * rng.normal(size=(n, 3))
     normal /= np.linalg.norm(normal, axis=1, keepdims=True)
-    axis = outward + 0.5 * dirs[owner] - 0.35 * up + 0.4 * rng.normal(size=(n, 3))
+    axis = outward + 0.6 * dirs - 0.35 * up + 0.4 * rng.normal(size=(n, 3))
     axis -= normal * np.sum(axis * normal, axis=1, keepdims=True)
     axis /= np.maximum(np.linalg.norm(axis, axis=1, keepdims=True), 1e-9)
     width_dir = np.cross(normal, axis)
@@ -199,4 +207,5 @@ def build_age(skel: og.Skeleton, pre: og.Precomputed, age: float, cards: list, s
     chains = _boost(og.branch_chains(skel, tree), trunk_boost)
     trunk_r = float(tree.radius.max()) * trunk_boost
     chains = chains + root_chains(trunk_r, tree.scale, np.random.default_rng(seed))
-    return tube_mesh(chains), leaf_quads(chains, age, cards, rng, leaf_scale), tree
+    anchors, anchor_dirs = twig_anchors(skel, tree.scale)
+    return tube_mesh(chains), leaf_quads(anchors, anchor_dirs, age, tree.scale, cards, rng, leaf_scale), tree
