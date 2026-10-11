@@ -43,6 +43,13 @@ def main() -> None:
     out.write_text(json.dumps(cards, indent=1))
     print(f"{len(cards)} leaf cards from {opacity_path.name} ({w}x{h})")
 
+    # Edge padding: the atlas background is light grey, and filtering at the alpha edge mixes it in
+    # → white fringes on every leaf. Fill every non-leaf pixel with the colour of the nearest leaf.
+    color_path = next(p for p in leaf_dir.iterdir() if "_Color" in p.name)
+    color = np.asarray(Image.open(color_path).convert("RGB"))
+    _, (iy, ix) = ndimage.distance_transform_edt(alpha < 0.9, return_indices=True)
+    Image.fromarray(color[iy, ix]).save(leaf_dir / "LeafColorPadded.png")
+
 
 if __name__ == "__main__":
     main()

@@ -39,11 +39,11 @@ def parse_args():
     p.add_argument("--width", type=int, default=1080)
     p.add_argument("--height", type=int, default=1440)
     p.add_argument("--leaf-scale", type=float, default=1.35)
-    p.add_argument("--trunk-boost", type=float, default=1.3)
+    p.add_argument("--trunk-boost", type=float, default=1.5)
     p.add_argument("--sun", type=float, default=4.5)
     p.add_argument("--sun-from", type=float, nargs=3, default=(-40.0, 12.0, 30.0),
                    help="sun position (it shines towards the tree); behind-left makes leaves glow")
-    p.add_argument("--rim", type=float, default=400000.0, help="mint back light power, W")
+    p.add_argument("--rim", type=float, default=180000.0, help="mint back light power, W")
     p.add_argument("--fill", type=float, default=12000.0)
     return p.parse_args(argv)
 
@@ -104,10 +104,15 @@ def bark_material(tex: Path):
     _, fac, a, b, out = mix_rgba(nodes)
     a.default_value = (0.055, 0.047, 0.038, 1.0)
     links.new(age_of_wood.outputs["Result"], fac)
-    oak_tone = nodes.new("ShaderNodeHueSaturation")  # the scan is pale and mossy; oak bark is dark grey-brown
-    oak_tone.inputs["Saturation"].default_value = 0.75
-    oak_tone.inputs["Value"].default_value = 0.42
-    links.new(diff.outputs["Color"], oak_tone.inputs["Color"])
+    # The scan is pale and mossy-green; keep its light/dark pattern, recolour it to oak grey-brown.
+    luminance = nodes.new("ShaderNodeRGBToBW")
+    oak_tone = nodes.new("ShaderNodeValToRGB")
+    oak_tone.color_ramp.elements[0].position = 0.15
+    oak_tone.color_ramp.elements[0].color = (0.018, 0.014, 0.011, 1.0)
+    oak_tone.color_ramp.elements[1].position = 0.75
+    oak_tone.color_ramp.elements[1].color = (0.15, 0.115, 0.085, 1.0)
+    links.new(diff.outputs["Color"], luminance.inputs["Color"])
+    links.new(luminance.outputs["Val"], oak_tone.inputs["Fac"])
     links.new(oak_tone.outputs["Color"], b)
     links.new(out, bsdf.inputs["Base Color"])
     links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
@@ -132,7 +137,8 @@ def leaf_material(tex: Path):
     output = nodes["Material Output"]
     d = tex / "leaf"
     pick = lambda key: next(p for p in d.iterdir() if key in p.name and p.suffix.lower() in (".jpg", ".png"))
-    color = image_node(nodes, pick("_Color"), False)
+    padded = d / "LeafColorPadded.png"  # written by tools/leaf_atlas.py (no white alpha fringes)
+    color = image_node(nodes, padded if padded.exists() else pick("_Color"), False)
     opacity = image_node(nodes, pick("_Opacity"), True)
     normal = image_node(nodes, pick("_NormalGL"), True)
     rough = image_node(nodes, pick("_Roughness"), True)
@@ -156,6 +162,10 @@ def leaf_material(tex: Path):
     links.new(color.outputs["Color"], hsv.inputs["Color"])
     links.new(hsv.outputs["Color"], bsdf.inputs["Base Color"])
     links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    for name in ("Specular IOR Level", "Specular"):  # waxy, not glossy: no white glints from the rim
+        if name in bsdf.inputs:
+            bsdf.inputs[name].default_value = 0.2
+            break
     nmap = nodes.new("ShaderNodeNormalMap")
     nmap.inputs["Strength"].default_value = 0.6
     links.new(normal.outputs["Color"], nmap.inputs["Color"])
@@ -257,7 +267,7 @@ def main() -> None:
     height = float(full_tubes.verts[:, 2].max())
     point_light("Key", "SUN", args.sun, (1.0, 0.93, 0.82), tuple(args.sun_from), (0.0, 0.0, 0.0))
     scene.objects["Key"].data.angle = math.radians(3.0)
-    point_light("Rim", "AREA", args.rim, MINT, (0.0, 22.0, height * 0.55), (0.0, -10.0, height * 0.45), size=28.0)
+    point_light("Rim", "AREA", args.rim, MINT, (0.0, 24.0, height * 0.75), (0.0, -10.0, height * 0.5), size=14.0)
     point_light("Fill", "AREA", args.fill, (0.85, 0.95, 1.0), (15.0, -35.0, 12.0), (0.0, 0.0, height * 0.4), size=30.0)
 
     world = bpy.data.worlds.new("World")

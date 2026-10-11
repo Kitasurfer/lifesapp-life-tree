@@ -65,7 +65,7 @@ def root_chains(trunk_radius: float, scale: float, rng: np.random.Generator) -> 
     roots = []
     for k in range(7):
         ang = k * 2 * np.pi / 7 + rng.uniform(-0.25, 0.25)
-        reach = trunk_radius * rng.uniform(4.5, 7.5) + 0.4 * scale
+        reach = trunk_radius * rng.uniform(3.0, 5.0) + 0.25 * scale
         t = np.linspace(0.0, 1.0, 9)
         wobble = 0.08 * reach * np.sin(t * np.pi * rng.uniform(1.5, 3.0))
         d = np.array([np.cos(ang), np.sin(ang), 0.0])
