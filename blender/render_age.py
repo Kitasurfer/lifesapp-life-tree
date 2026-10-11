@@ -39,7 +39,7 @@ def parse_args():
     p.add_argument("--width", type=int, default=1080)
     p.add_argument("--height", type=int, default=1440)
     p.add_argument("--leaf-scale", type=float, default=1.35)
-    p.add_argument("--trunk-boost", type=float, default=1.5)
+    p.add_argument("--trunk-boost", type=float, default=3.0)
     p.add_argument("--sun", type=float, default=5.5)
     p.add_argument("--sun-from", type=float, nargs=3, default=(-35.0, 14.0, 48.0),
                    help="sun position (it shines towards the tree); behind-left makes leaves glow")
