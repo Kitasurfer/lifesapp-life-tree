@@ -16,7 +16,7 @@ import oak_growth as og
 
 BARK_TILE_M = 0.6          # metres of bark covered by one bark texture tile
 LEAF_LENGTH_M = 0.11
-LEAVES_AT_FULL_AGE = 140_000
+LEAVES_AT_FULL_AGE = 280_000
 
 
 @dataclass(frozen=True)
@@ -71,8 +71,8 @@ def root_chains(trunk_radius: float, scale: float, rng: np.random.Generator) -> 
         d = np.array([np.cos(ang), np.sin(ang), 0.0])
         side = np.array([-d[1], d[0], 0.0])
         pts = (d[None] * (trunk_radius * 0.4 + reach * t)[:, None] + side[None] * wobble[:, None])
-        pts[:, 2] = trunk_radius * 0.35 * (1 - t) ** 1.5 - 0.06 * scale * t ** 2
-        radii = trunk_radius * rng.uniform(0.28, 0.4) * (1 - t) ** 1.3 + 0.004
+        radii = trunk_radius * rng.uniform(0.3, 0.42) * (1 - t) ** 1.2 + 0.004
+        pts[:, 2] = radii * (0.45 - 1.6 * t ** 2)  # half-buried hump that dives into the soil
         roots.append(og.Chain(pts, radii, order=-1, ends_in_tip=False))  # -1: not the trunk
     return roots
 
@@ -144,7 +144,7 @@ def leaf_quads(chains: list, age: float, cards: list, rng: np.random.Generator,
     dirs /= np.maximum(np.linalg.norm(dirs, axis=1, keepdims=True), 1e-9)
 
     total = LEAVES_AT_FULL_AGE * og.height_fraction(age) ** 2
-    per_tip = int(np.clip(total / len(tips), 10, 700))
+    per_tip = int(np.clip(total / len(tips), 10, 1200))
     crown = np.ptp(ends[:, :2], axis=0).max() if len(ends) > 1 else 0.6
     clump_r = float(np.clip(1.15 * crown / np.sqrt(len(tips)), 0.12, 1.4))
 
@@ -183,12 +183,20 @@ def leaf_quads(chains: list, age: float, cards: list, rng: np.random.Generator,
     return MeshData(verts.reshape(-1, 3), quads, uv.reshape(-1, 2), np.repeat(rng.uniform(0, 1, n), 4))
 
 
+def _boost(chains: list, trunk_boost: float) -> list:
+    """Art direction: a heavier trunk and main limbs (order 0 / 1) than the scan's measurement."""
+    if trunk_boost == 1.0:
+        return chains
+    by_order = {0: trunk_boost, 1: 1.0 + (trunk_boost - 1.0) * 0.5}
+    return [og.Chain(c.points, c.radii * by_order.get(c.order, 1.0), c.order, c.ends_in_tip) for c in chains]
+
+
 def build_age(skel: og.Skeleton, pre: og.Precomputed, age: float, cards: list, seed: int = 195,
-              leaf_scale: float = 1.0):
+              leaf_scale: float = 1.0, trunk_boost: float = 1.0):
     """Everything the renderer needs for one age: (bark tubes, leaves, aged tree)."""
     rng = np.random.default_rng(seed + int(round(age * 10)))
     tree = og.grow(skel, pre, age)
-    chains = og.branch_chains(skel, tree)
-    trunk_r = float(tree.radius.max())
+    chains = _boost(og.branch_chains(skel, tree), trunk_boost)
+    trunk_r = float(tree.radius.max()) * trunk_boost
     chains = chains + root_chains(trunk_r, tree.scale, np.random.default_rng(seed))
     return tube_mesh(chains), leaf_quads(chains, age, cards, rng, leaf_scale), tree

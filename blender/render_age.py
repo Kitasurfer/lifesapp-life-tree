@@ -38,10 +38,13 @@ def parse_args():
     p.add_argument("--percent", type=int, default=100)
     p.add_argument("--width", type=int, default=1080)
     p.add_argument("--height", type=int, default=1440)
-    p.add_argument("--leaf-scale", type=float, default=1.0)
-    p.add_argument("--sun", type=float, default=4.0)
-    p.add_argument("--rim", type=float, default=120000.0, help="mint back light power, W")
-    p.add_argument("--fill", type=float, default=15000.0)
+    p.add_argument("--leaf-scale", type=float, default=1.35)
+    p.add_argument("--trunk-boost", type=float, default=1.3)
+    p.add_argument("--sun", type=float, default=4.5)
+    p.add_argument("--sun-from", type=float, nargs=3, default=(-40.0, 12.0, 30.0),
+                   help="sun position (it shines towards the tree); behind-left makes leaves glow")
+    p.add_argument("--rim", type=float, default=400000.0, help="mint back light power, W")
+    p.add_argument("--fill", type=float, default=12000.0)
     return p.parse_args(argv)
 
 
@@ -99,9 +102,13 @@ def bark_material(tex: Path):
     age_of_wood.inputs["From Max"].default_value = 0.09
     links.new(radius.outputs["Fac"], age_of_wood.inputs["Value"])
     _, fac, a, b, out = mix_rgba(nodes)
-    a.default_value = (0.16, 0.14, 0.11, 1.0)
+    a.default_value = (0.055, 0.047, 0.038, 1.0)
     links.new(age_of_wood.outputs["Result"], fac)
-    links.new(diff.outputs["Color"], b)
+    oak_tone = nodes.new("ShaderNodeHueSaturation")  # the scan is pale and mossy; oak bark is dark grey-brown
+    oak_tone.inputs["Saturation"].default_value = 0.75
+    oak_tone.inputs["Value"].default_value = 0.42
+    links.new(diff.outputs["Color"], oak_tone.inputs["Color"])
+    links.new(oak_tone.outputs["Color"], b)
     links.new(out, bsdf.inputs["Base Color"])
     links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
 
@@ -135,15 +142,15 @@ def leaf_material(tex: Path):
     rand = nodes.new("ShaderNodeAttribute")
     rand.attribute_name = "leaf_rand"
     hue = nodes.new("ShaderNodeMapRange")
-    hue.inputs["To Min"].default_value = 0.52
-    hue.inputs["To Max"].default_value = 0.56
+    hue.inputs["To Min"].default_value = 0.535
+    hue.inputs["To Max"].default_value = 0.575
     value = nodes.new("ShaderNodeMapRange")
-    value.inputs["To Min"].default_value = 0.30
-    value.inputs["To Max"].default_value = 0.48
+    value.inputs["To Min"].default_value = 0.17
+    value.inputs["To Max"].default_value = 0.32
     links.new(rand.outputs["Fac"], hue.inputs["Value"])
     links.new(rand.outputs["Fac"], value.inputs["Value"])
     hsv = nodes.new("ShaderNodeHueSaturation")
-    hsv.inputs["Saturation"].default_value = 1.35
+    hsv.inputs["Saturation"].default_value = 1.25
     links.new(hue.outputs["Result"], hsv.inputs["Hue"])
     links.new(value.outputs["Result"], hsv.inputs["Value"])
     links.new(color.outputs["Color"], hsv.inputs["Color"])
@@ -186,15 +193,26 @@ def point_light(name, kind, energy, colour, location, target, size=None):
 
 
 def frame_camera(scene, full_points: np.ndarray, width: int, height: int):
-    """Straight verticals (no tilt): horizontal camera + lens shift, framed on the full-age tree."""
+    """Straight verticals (no tilt): horizontal camera + lens shift, framed on the full-age tree.
+
+    Framing is solved in projection, so crown parts nearer the camera (which look bigger) still fit.
+    """
     lens, sensor = 50.0, 36.0
-    top, bottom, side = 0.05, 0.10, 0.05
-    xmin, xmax = np.percentile(full_points[:, 0], [0.1, 99.9])
-    zmax = np.percentile(full_points[:, 2], 99.95)
-    aspect = width / height
-    frame_h = max(zmax / (1 - top - bottom), (xmax - xmin) / (1 - 2 * side) / aspect)
-    distance = frame_h / (sensor / lens)
+    top, bottom, side = 0.05, 0.10, 0.06
     eye = 1.6
+    aspect = width / height
+    pts = full_points[np.random.default_rng(0).choice(len(full_points), min(len(full_points), 200_000), replace=False)]
+    x_c = float(np.median(pts[:, 0]))
+    distance = 40.0
+    for _ in range(6):
+        k = distance / (distance + pts[:, 1])           # perspective scale towards the y=0 plane
+        x = x_c + (pts[:, 0] - x_c) * k
+        z = eye + (pts[:, 2] - eye) * k
+        xmin, xmax = np.percentile(x, [0.02, 99.98])
+        zmax = float(np.percentile(z, 99.98))
+        x_c = float((xmin + xmax) / 2)
+        frame_h = max(zmax / (1 - top - bottom), (xmax - xmin) / (1 - 2 * side) / aspect)
+        distance = frame_h / (sensor / lens)
     centre_z = -bottom * frame_h + frame_h / 2
 
     cam = bpy.data.cameras.new("Camera")
@@ -204,11 +222,11 @@ def frame_camera(scene, full_points: np.ndarray, width: int, height: int):
     cam.shift_y = (centre_z - eye) / frame_h
     cam.clip_end = distance * 4
     obj = bpy.data.objects.new("Camera", cam)
-    obj.location = ((xmin + xmax) / 2, -distance, eye)
+    obj.location = (x_c, -distance, eye)
     obj.rotation_euler = (math.pi / 2, 0.0, 0.0)
     scene.collection.objects.link(obj)
     scene.camera = obj
-    return {"frame_height_m": float(frame_h), "distance_m": float(distance), "x_centre_m": float((xmin + xmax) / 2)}
+    return {"frame_height_m": float(frame_h), "distance_m": float(distance), "x_centre_m": x_c}
 
 
 def main() -> None:
@@ -220,8 +238,9 @@ def main() -> None:
     cards = [om.LeafCard(**c) for c in json.loads((args.textures / "leaf_cards.json").read_text())]
     skel = og.load_npz(args.npz)
     pre = og.precompute(skel)
-    full_tubes, full_leaves, _ = om.build_age(skel, pre, og.FULL_AGE, cards, leaf_scale=args.leaf_scale)
-    tubes, leaves, tree = om.build_age(skel, pre, args.age, cards, leaf_scale=args.leaf_scale)
+    look = dict(leaf_scale=args.leaf_scale, trunk_boost=args.trunk_boost)
+    full_tubes, full_leaves, _ = om.build_age(skel, pre, og.FULL_AGE, cards, **look)
+    tubes, leaves, tree = om.build_age(skel, pre, args.age, cards, **look)
     t_geo = time.time()
 
     make_mesh("Oak", tubes, "radius", bark_material(args.textures))
@@ -236,7 +255,7 @@ def main() -> None:
 
     framing = frame_camera(scene, np.vstack([full_tubes.verts, full_leaves.verts]), args.width, args.height)
     height = float(full_tubes.verts[:, 2].max())
-    point_light("Key", "SUN", args.sun, (1.0, 0.93, 0.82), (-30.0, -40.0, 45.0), (0.0, 0.0, 0.0))
+    point_light("Key", "SUN", args.sun, (1.0, 0.93, 0.82), tuple(args.sun_from), (0.0, 0.0, 0.0))
     scene.objects["Key"].data.angle = math.radians(3.0)
     point_light("Rim", "AREA", args.rim, MINT, (0.0, 22.0, height * 0.55), (0.0, -10.0, height * 0.45), size=28.0)
     point_light("Fill", "AREA", args.fill, (0.85, 0.95, 1.0), (15.0, -35.0, 12.0), (0.0, 0.0, height * 0.4), size=30.0)
