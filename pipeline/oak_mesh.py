@@ -192,11 +192,16 @@ def leaf_quads(anchors: np.ndarray, anchor_dirs: np.ndarray, age: float, scale: 
 
 
 def _boost(chains: list, trunk_boost: float) -> list:
-    """Art direction: a heavier trunk and main limbs (order 0 / 1) than the scan's measurement."""
+    """Art direction: a heavier trunk than the scan's measurement.
+
+    The extra thickness fades out with branch order (trunk → limbs → boughs), so a massive trunk
+    still flows into its limbs instead of snapping to thin branches at the first fork.
+    """
     if trunk_boost == 1.0:
         return chains
-    by_order = {0: trunk_boost, 1: 1.0 + (trunk_boost - 1.0) * 0.5}
-    return [og.Chain(c.points, c.radii * by_order.get(c.order, 1.0), c.order, c.ends_in_tip) for c in chains]
+    share = {0: 1.0, 1: 0.55, 2: 0.25, 3: 0.1}
+    return [og.Chain(c.points, c.radii * (1.0 + (trunk_boost - 1.0) * share.get(c.order, 0.0)),
+                     c.order, c.ends_in_tip) for c in chains]
 
 
 def build_age(skel: og.Skeleton, pre: og.Precomputed, age: float, cards: list, seed: int = 195,
