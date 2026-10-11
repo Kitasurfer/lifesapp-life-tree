@@ -117,7 +117,7 @@ jobs:
           python tools/composite.py frames preview
       - name: App assets (WebP)
         run: |
-          sudo apt-get install -y -qq webp
+          sudo apt-get update -qq && sudo apt-get install -y -qq webp
           mkdir -p webp
           for f in $(find frames -name 'oak_*.png' | sort); do
             age=$(basename "$f" .png | sed 's/oak_//')
