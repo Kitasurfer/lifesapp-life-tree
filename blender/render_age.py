@@ -40,11 +40,11 @@ def parse_args():
     p.add_argument("--height", type=int, default=1440)
     p.add_argument("--leaf-scale", type=float, default=1.35)
     p.add_argument("--trunk-boost", type=float, default=1.5)
-    p.add_argument("--sun", type=float, default=4.5)
-    p.add_argument("--sun-from", type=float, nargs=3, default=(-40.0, 12.0, 30.0),
+    p.add_argument("--sun", type=float, default=5.5)
+    p.add_argument("--sun-from", type=float, nargs=3, default=(-35.0, 14.0, 48.0),
                    help="sun position (it shines towards the tree); behind-left makes leaves glow")
     p.add_argument("--rim", type=float, default=110000.0, help="mint back light power, W")
-    p.add_argument("--fill", type=float, default=12000.0)
+    p.add_argument("--fill", type=float, default=16000.0)
     return p.parse_args(argv)
 
 
@@ -195,6 +195,7 @@ def point_light(name, kind, energy, colour, location, target, size=None):
     if size is not None:
         light.size = size
     obj = bpy.data.objects.new(name, light)
+    obj.visible_camera = False  # the rim sits behind the crown: seen through gaps it reads as specks
     obj.location = location
     direction = Vector(target) - Vector(location)
     obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
