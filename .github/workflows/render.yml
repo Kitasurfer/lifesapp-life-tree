@@ -1,0 +1,122 @@
+name: render
+
+on:
+  workflow_dispatch:
+    inputs:
+      ages:
+        description: "Comma-separated ages (100 is always added for the silhouette)"
+        default: "10,30,50,80"
+      samples:
+        description: "Cycles samples"
+        default: "64"
+      percent:
+        description: "Resolution % of 1080x1440"
+        default: "50"
+      extra:
+        description: "Extra render_age.py flags, e.g. --rim 80000 --leaf-scale 1.3"
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  BLENDER_VERSION: "4.5.14"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      ages: ${{ steps.ages.outputs.ages }}
+    steps:
+      - id: ages
+        env:
+          AGES: ${{ inputs.ages }}
+        run: |
+          python3 -c 'import json, os; a = sorted({int(x) for x in os.environ["AGES"].split(",") if x.strip()} | {100}); print("ages=" + json.dumps(a))' >> "$GITHUB_OUTPUT"
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        age: ${{ fromJSON(needs.plan.outputs.ages) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Blender
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/blender
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
+      - name: Install Blender
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 3 "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VERSION}-linux-x64.tar.xz" | tar -xJ -C ~
+          mv ~/blender-${BLENDER_VERSION}-linux-x64 ~/blender
+
+      - name: System libraries for headless Blender
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 libxkbcommon0 libsm6 libx11-6
+
+      - name: Cache textures
+        uses: actions/cache@v4
+        with:
+          path: textures
+          key: textures-v1-${{ hashFiles('tools/fetch_textures.sh') }}
+
+      - name: Textures (CC0) and leaf cards
+        run: |
+          bash tools/fetch_textures.sh textures
+          pip install -q numpy pillow scipy
+          python tools/leaf_atlas.py textures/leaf textures/leaf_cards.json
+
+      - name: Render age ${{ matrix.age }}
+        env:
+          AGE: ${{ matrix.age }}
+          SAMPLES: ${{ inputs.samples }}
+          PERCENT: ${{ inputs.percent }}
+          EXTRA: ${{ inputs.extra }}
+        run: |
+          out="out/oak_$(printf '%03d' "$AGE").png"
+          # shellcheck disable=SC2086
+          ~/blender/blender -b --factory-startup --python blender/render_age.py -- \
+            --npz data/oak195.npz --textures textures --age "$AGE" --out "$out" \
+            --samples "$SAMPLES" --percent "$PERCENT" $EXTRA
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frame-${{ matrix.age }}
+          path: out/
+          retention-days: 14
+
+  preview:
+    needs: render
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frame-*
+          path: frames
+          merge-multiple: true
+      - run: |
+          pip install -q numpy pillow
+          python tools/composite.py frames preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview
+          path: preview/
+          retention-days: 14
