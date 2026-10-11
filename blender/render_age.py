@@ -5,8 +5,8 @@
 
 One fixed camera for every age: framing comes from the FULL-age tree, so frames line up
 pixel-for-pixel and the app can lay the full-age silhouette behind any age.
-Transparent film + shadow catcher: only the tree and its contact shadow are in the PNG — the app
-draws the background (dark/light theme).
+Transparent film: only the tree is in the PNG — the app draws the background (dark/light theme)
+and the soft contact shadow.
 """
 import argparse
 import json
@@ -260,13 +260,16 @@ def main() -> None:
 
     ground = bpy.data.meshes.new("Ground")
     ground.from_pydata([(-200, -200, 0), (200, -200, 0), (200, 200, 0), (-200, 200, 0)], [], [(0, 1, 2, 3)])
-    soil = bpy.data.materials.new("Soil")  # a white catcher bounces sun + rim up onto the bark
+    # Invisible soil: it bounces a little warm light onto the bark and hides the buried root ends,
+    # but is not in the frame — a shadow catcher put the crown's shadow there as a dark band that
+    # reads as a horizon line on the app's light theme (the app draws its own soft contact shadow).
+    soil = bpy.data.materials.new("Soil")
     soil.use_nodes = True
     soil.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.03, 0.035, 0.025, 1.0)
     soil.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 1.0
     ground.materials.append(soil)
     ground_obj = bpy.data.objects.new("Ground", ground)
-    ground_obj.is_shadow_catcher = True
+    ground_obj.visible_camera = False
     scene.collection.objects.link(ground_obj)
 
     framing = frame_camera(scene, np.vstack([full_tubes.verts, full_leaves.verts]), args.width, args.height)

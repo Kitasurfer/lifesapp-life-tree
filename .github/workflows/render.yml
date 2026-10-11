@@ -115,8 +115,22 @@ jobs:
       - run: |
           pip install -q numpy pillow
           python tools/composite.py frames preview
+      - name: App assets (WebP)
+        run: |
+          sudo apt-get install -y -qq webp
+          mkdir -p webp
+          for f in $(find frames -name 'oak_*.png' | sort); do
+            age=$(basename "$f" .png | sed 's/oak_//')
+            cwebp -quiet -q 80 -alpha_q 90 -m 6 "$f" -o "webp/life_oak_${age}.webp"
+          done
+          du -ch webp/*.webp | tail -1
       - uses: actions/upload-artifact@v4
         with:
           name: preview
           path: preview/
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webp
+          path: webp/
+          retention-days: 30
