@@ -61,10 +61,13 @@ class RootLayout:
     strength: np.ndarray     # 0..1, how heavy each one is
 
 
-def root_layout(seed: int, count: int = 9) -> RootLayout:
-    rng = np.random.default_rng(seed)
-    angles = (np.arange(count) + rng.uniform(-0.3, 0.3, count)) * 2 * np.pi / count
-    return RootLayout(angles, rng.uniform(0.55, 1.0, count))
+def root_layout(seed: int, count: int = 8) -> RootLayout:
+    """Evenly spaced, equally heavy buttresses: the foot of the stem is symmetric from every side.
+
+    Rotated by a quarter step so one pair frames the stem towards the camera (camera looks along +y).
+    """
+    angles = (np.arange(count) + 0.25) * 2 * np.pi / count
+    return RootLayout(angles, np.full(count, 0.85))
 
 
 def _flare(world_angle: np.ndarray, z: float, r0: float, layout: RootLayout) -> np.ndarray:
@@ -79,7 +82,7 @@ def _flare(world_angle: np.ndarray, z: float, r0: float, layout: RootLayout) -> 
     amp = 1.25 * np.exp(-h / 2.4) + 0.12 * np.exp(-h / 9.0)
     d = world_angle[:, None] - layout.angles[None, :]
     lobes = (layout.strength[None, :] * np.exp(sharp * (np.cos(d) - 1.0))).max(axis=1)
-    ribs = 0.035 * np.exp(-h / 12.0) * np.cos(19.0 * world_angle + 1.7 * np.sin(0.9 * h))
+    ribs = 0.03 * np.exp(-h / 12.0) * np.cos(24.0 * world_angle)
     return 1.0 + swell + amp * lobes + ribs
 
 
@@ -94,10 +97,10 @@ def root_chains(trunk_radius: float, scale: float, layout: RootLayout, rng: np.r
         t = np.linspace(0.0, 1.0, steps)
         d = np.array([np.cos(ang), np.sin(ang), 0.0])
         side = np.array([-d[1], d[0], 0.0])
-        wobble = 0.10 * reach * np.sin(t * np.pi * rng.uniform(1.2, 2.6) + rng.uniform(0, 6.28)) * t
+        wobble = 0.04 * reach * np.sin(t * np.pi * rng.uniform(1.2, 2.6) + rng.uniform(0, 6.28)) * t
         pts = start[None] + d[None] * (reach * t)[:, None] + side[None] * wobble[:, None]
         radii = r_start * (1 - t ** 1.6) ** 0.8 + 0.01
-        humps = 0.18 * np.sin(t * np.pi * rng.uniform(2.0, 3.5) + rng.uniform(0, 6.28))
+        humps = 0.10 * np.sin(t * np.pi * rng.uniform(2.0, 3.5) + rng.uniform(0, 6.28))
         pts[:, 2] = radii * (0.95 + humps - 2.4 * t ** 1.5)  # rides high at the stem, then sinks
         roots.append(og.Chain(pts, radii, order=-1, ends_in_tip=False))  # -1: not the trunk
         return pts, radii
@@ -107,10 +110,9 @@ def root_chains(trunk_radius: float, scale: float, layout: RootLayout, rng: np.r
         reach = trunk_radius * (3.5 + 3.5 * strength) + 0.3 * scale
         r_start = trunk_radius * (0.34 + 0.26 * strength)
         pts, radii = one(ang, strength, d * trunk_radius * 0.75, r_start, reach)
-        if strength > 0.72:
-            k = 6
-            fork = ang + rng.choice([-1.0, 1.0]) * rng.uniform(0.45, 0.8)
-            one(fork, strength, pts[k] * np.array([1.0, 1.0, 0.0]), radii[k] * 0.7, reach * 0.55, steps=10)
+        k = 6
+        for turn in (-0.55, 0.55):  # every root forks the same way to both sides
+            one(ang + turn, strength, pts[k] * np.array([1.0, 1.0, 0.0]), radii[k] * 0.6, reach * 0.5, steps=10)
     return roots
 
 

@@ -239,7 +239,7 @@ def frame_camera(scene, full_points: np.ndarray, width: int, height: int):
     eye = 1.6
     aspect = width / height
     pts = full_points[np.random.default_rng(0).choice(len(full_points), min(len(full_points), 200_000), replace=False)]
-    x_c = float(np.median(pts[:, 0]))
+    x_c = 0.0  # the stem stands on the centre line of every frame
     distance = 40.0
     for _ in range(6):
         k = distance / (distance + pts[:, 1])           # perspective scale towards the y=0 plane
@@ -247,8 +247,7 @@ def frame_camera(scene, full_points: np.ndarray, width: int, height: int):
         z = eye + (pts[:, 2] - eye) * k
         xmin, xmax = np.percentile(x, [0.02, 99.98])
         zmax = float(np.percentile(z, 99.98))
-        x_c = float((xmin + xmax) / 2)
-        frame_h = max(zmax / (1 - top - bottom), (xmax - xmin) / (1 - 2 * side) / aspect)
+        frame_h = max(zmax / (1 - top - bottom), 2 * max(abs(xmin), abs(xmax)) / (1 - 2 * side) / aspect)
         distance = frame_h / (sensor / lens)
     centre_z = -bottom * frame_h + frame_h / 2
 
@@ -273,7 +272,7 @@ def main() -> None:
     scene = bpy.context.scene
 
     cards = [om.LeafCard(**c) for c in json.loads((args.textures / "leaf_cards.json").read_text())]
-    skel = og.load_npz(args.npz)
+    skel = og.straighten(og.load_npz(args.npz))
     pre = og.precompute(skel)
     look = dict(leaf_scale=args.leaf_scale, trunk_boost=args.trunk_boost)
     full_tubes, full_leaves, _ = om.build_age(skel, pre, og.FULL_AGE, cards, **look)

@@ -73,6 +73,45 @@ def rotate_z(skel: Skeleton, degrees: float) -> Skeleton:
                     skel.order, skel.branch)
 
 
+def straighten(skel: Skeleton, stem_share: float = 0.28, balance: float = 1.12) -> Skeleton:
+    """Stand the stem on a plumb line and balance the crown over it.
+
+    The scanned oak leans: its stem drifts off the base before the first fork. Every height is
+    shifted horizontally by the stem's drift at that height (above the fork: by the drift at the
+    fork), so branches stay attached, the stem becomes a straight column on the z axis, and the
+    crown sits over it. The wider side of the crown is then drawn in until left and right are
+    within `balance` of each other (the camera looks along +y, so x is left/right in the frame).
+    """
+    root = int(np.flatnonzero(skel.parent < 0)[0])
+    stem = np.flatnonzero(skel.branch == skel.branch[root])
+    end = skel.start + skel.axis * skel.length[:, None]
+    line = np.vstack([skel.start[root][None], end[stem]])
+    line = line[np.argsort(line[:, 2])]
+    fork_z = stem_share * float(end[:, 2].max())
+    z = np.maximum.accumulate(line[:, 2]) + np.arange(len(line)) * 1e-9  # strictly increasing for interp
+    at_fork = np.array([np.interp(fork_z, z, line[:, 0]), np.interp(fork_z, z, line[:, 1])])
+    line[z > fork_z, :2] = at_fork
+    for _ in range(2):  # no kink at the fork, or branches would bend there
+        line[1:-1, :2] = (line[:-2, :2] + 2.0 * line[1:-1, :2] + line[2:, :2]) / 4.0
+
+    def plumb(points: np.ndarray) -> np.ndarray:
+        out = points.copy()
+        out[:, 0] -= np.interp(points[:, 2], z, line[:, 0])
+        out[:, 1] -= np.interp(points[:, 2], z, line[:, 1])
+        return out
+
+    start, tip = plumb(skel.start), plumb(end)
+    left, right = -np.percentile(tip[:, 0], 0.5), np.percentile(tip[:, 0], 99.5)
+    squeeze = min(1.0, balance * min(left, right) / max(left, right))
+    wide = (lambda x: x < 0) if left > right else (lambda x: x > 0)
+    for pts in (start, tip):
+        pts[wide(pts[:, 0]), 0] *= squeeze
+
+    span = tip - start
+    length = np.maximum(np.linalg.norm(span, axis=1), 1e-9)
+    return Skeleton(start, span / length[:, None], length, skel.radius, skel.parent, skel.order, skel.branch)
+
+
 def topo_order(parent: np.ndarray) -> np.ndarray:
     """Cylinder indices with every parent before its children."""
     n = len(parent)
