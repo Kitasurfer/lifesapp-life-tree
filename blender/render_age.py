@@ -173,10 +173,10 @@ def bark_material(tex: Path):
     bent = nodes.new("ShaderNodeVectorMath")
     bent.operation = "MULTIPLY_ADD"
     links.new(wobble.outputs["Color"], bent.inputs[0])
-    bent.inputs[1].default_value = (0.10, 0.25, 0.0)
+    bent.inputs[1].default_value = (0.06, 0.30, 0.0)
     links.new(metres.outputs["UV"], bent.inputs[2])
     stretch = nodes.new("ShaderNodeMapping")
-    stretch.inputs["Scale"].default_value = (9.5, 1.5, 1.0)
+    stretch.inputs["Scale"].default_value = (15.0, 2.6, 1.0)
     links.new(bent.outputs["Vector"], stretch.inputs["Vector"])
     cells = nodes.new("ShaderNodeTexVoronoi")
     cells.voronoi_dimensions = "2D"
@@ -186,7 +186,7 @@ def bark_material(tex: Path):
     # 0 furrow floor .. 1 ridge top; no furrows at the UV seam (the pattern does not wrap round the wood)
     ridge = math(nodes, links, "SUBTRACT", 1.0, math(
         nodes, links, "MULTIPLY", attribute(nodes, "seam"),
-        math(nodes, links, "SUBTRACT", 1.0, map_range(nodes, links, cells.outputs["Distance"], 0.02, 0.22))))
+        math(nodes, links, "SUBTRACT", 1.0, map_range(nodes, links, cells.outputs["Distance"], 0.015, 0.16))))
 
     # The scan is pale and mossy-green; keep its light/dark pattern, recolour it to oak grey-brown.
     luminance = nodes.new("ShaderNodeRGBToBW")
@@ -201,11 +201,11 @@ def bark_material(tex: Path):
 
     # Furrow floors are dark and damp; the ridge tops weather pale grey.
     in_furrow = math(nodes, links, "MULTIPLY", math(nodes, links, "SUBTRACT", 1.0, ridge), old)
-    colour = mix_colour(nodes, links, math(nodes, links, "MULTIPLY", in_furrow, 0.8),
+    colour = mix_colour(nodes, links, math(nodes, links, "MULTIPLY", in_furrow, 0.6),
                         colour, (0.016, 0.012, 0.009, 1.0))
     weathered = math(nodes, links, "MULTIPLY", math(nodes, links, "POWER", ridge, 3.0),
-                     math(nodes, links, "MULTIPLY", old, 0.35))
-    colour = mix_colour(nodes, links, weathered, colour, (0.40, 0.37, 0.32, 1.0))
+                     math(nodes, links, "MULTIPLY", old, 0.22))
+    colour = mix_colour(nodes, links, weathered, colour, (0.38, 0.34, 0.28, 1.0))
 
     # Big soft patches over the stem: no two metres of an old stem have the same tone.
     position = nodes.new("ShaderNodeNewGeometry")
@@ -245,7 +245,7 @@ def bark_material(tex: Path):
     # Relief: furrows carry it on old wood, the photoscan's own height adds the fine grain.
     grain = math(nodes, links, "MULTIPLY", disp.outputs["Color"], 0.35)
     height = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", ridge, 0.65), grain)
-    depth = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", old, 0.085),
+    depth = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", old, 0.06),
                  math(nodes, links, "MULTIPLY", age_of_wood, 0.008))
     displacement = nodes.new("ShaderNodeDisplacement")
     displacement.inputs["Midlevel"].default_value = 0.75   # furrows cut in; ridges hardly stand out
