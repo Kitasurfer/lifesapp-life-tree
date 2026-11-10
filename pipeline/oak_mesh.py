@@ -14,9 +14,10 @@ import numpy as np
 
 import oak_growth as og
 
-BARK_TILE_M = 0.6          # metres of bark covered by one bark texture tile
+BARK_TILE_M = 0.6          # metres of bark covered by one bark texture tile on thin wood
+BARK_TILE_PER_RADIUS = 1.5  # thick wood: the tile grows with the radius, so fissures read from afar
 LEAF_LENGTH_M = 0.11
-LEAVES_AT_FULL_AGE = 380_000
+LEAVES_AT_FULL_AGE = 450_000
 
 
 @dataclass(frozen=True)
@@ -75,10 +76,10 @@ def _flare(world_angle: np.ndarray, z: float, r0: float, layout: RootLayout) -> 
     h = max(z, 0.0) / r0
     swell = 0.55 * np.exp(-h / 1.4)
     sharp = 2.5 + 14.0 * np.exp(-h / 1.2)
-    amp = 0.85 * np.exp(-h / 1.8) + 0.10 * np.exp(-h / 9.0)
+    amp = 1.25 * np.exp(-h / 2.4) + 0.12 * np.exp(-h / 9.0)
     d = world_angle[:, None] - layout.angles[None, :]
     lobes = (layout.strength[None, :] * np.exp(sharp * (np.cos(d) - 1.0))).max(axis=1)
-    ribs = 0.03 * np.exp(-h / 10.0) * np.cos(23.0 * world_angle + 1.7 * np.sin(0.9 * h))
+    ribs = 0.035 * np.exp(-h / 12.0) * np.cos(19.0 * world_angle + 1.7 * np.sin(0.9 * h))
     return 1.0 + swell + amp * lobes + ribs
 
 
@@ -95,8 +96,9 @@ def root_chains(trunk_radius: float, scale: float, layout: RootLayout, rng: np.r
         side = np.array([-d[1], d[0], 0.0])
         wobble = 0.10 * reach * np.sin(t * np.pi * rng.uniform(1.2, 2.6) + rng.uniform(0, 6.28)) * t
         pts = start[None] + d[None] * (reach * t)[:, None] + side[None] * wobble[:, None]
-        radii = r_start * (1 - t) ** 0.9 + 0.006
-        pts[:, 2] = radii * (0.95 - 2.3 * t ** 1.3)  # rides high at the stem, then sinks
+        radii = r_start * (1 - t ** 1.6) ** 0.8 + 0.01
+        humps = 0.18 * np.sin(t * np.pi * rng.uniform(2.0, 3.5) + rng.uniform(0, 6.28))
+        pts[:, 2] = radii * (0.95 + humps - 2.4 * t ** 1.5)  # rides high at the stem, then sinks
         roots.append(og.Chain(pts, radii, order=-1, ends_in_tip=False))  # -1: not the trunk
         return pts, radii
 
@@ -125,12 +127,16 @@ def tube_mesh(chains: list, layout: RootLayout, trunk_flare: bool = True) -> Mes
     trunk_r0 = max(c.radii[0] for c in chains)
     for c_idx, chain in enumerate(chains):
         r_max = float(chain.radii.max())
-        points, radii = _resample(chain.points, chain.radii, max(0.06, 3.0 * r_max) if r_max < 0.15 else 0.12)
+        # The scan's cylinders are ~2 m long with one radius each: smooth the taper before and after
+        # resampling, or every change of slope shows as a ring on the stem.
+        points, radii = _resample(chain.points, _smooth(chain.radii, 2),
+                                  max(0.06, 3.0 * r_max) if r_max < 0.15 else 0.12)
         if len(points) < 2:
             continue
-        # The scan's cylinders step down in radius; smoothed, the stem tapers instead of showing rings.
-        radii = _smooth(radii, 8 if r_max > 0.08 else 3)
-        is_trunk = trunk_flare and chain.order == 0 and np.linalg.norm(points[0, :2]) < 0.05 and points[0, 2] < 0.05
+        radii = _smooth(radii, 60 if r_max > 0.08 else 3)
+        # Every piece of the stem (the scan splits it into several branches) takes the same fluting,
+        # otherwise each joint shows as a ring.
+        is_trunk = trunk_flare and chain.order == 0 and r_max > 0.25 * trunk_r0
         sides = 80 if is_trunk else int(np.clip(round(6 + r_max * 36), 5, 28))
         tang, normal, binormal = _frames(points)
         theta = np.linspace(0.0, 2 * np.pi, sides + 1)  # seam vertex duplicated for clean UVs
@@ -144,10 +150,12 @@ def tube_mesh(chains: list, layout: RootLayout, trunk_flare: bool = True) -> Mes
                 + ring_r[..., None] * (cos[None, :, None] * normal[:, None, :] + sin[None, :, None] * binormal[:, None, :]))
         n_rings = len(points)
         verts.append(ring.reshape(-1, 3))
-        values.append(np.repeat(radii, sides + 1))
+        # Roots are old wood whatever their thickness: they take the fissured bark, not the smooth one.
+        values.append(np.repeat(np.maximum(radii, 0.12) if chain.order < 0 else radii, sides + 1))
 
-        u_repeat = max(1.0, round(2 * np.pi * r_max / BARK_TILE_M))
-        v = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]) / BARK_TILE_M
+        tile = max(BARK_TILE_M, BARK_TILE_PER_RADIUS * r_max)
+        u_repeat = max(1.0, round(2 * np.pi * r_max / tile))
+        v = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]) / tile
         v = v + (c_idx * 0.37) % 1.0  # neighbours don't start on the same texel row
         u = theta / (2 * np.pi) * u_repeat
 
@@ -198,7 +206,7 @@ def leaf_quads(anchors: np.ndarray, anchor_dirs: np.ndarray, age: float, scale: 
         return MeshData(np.zeros((0, 3)), np.zeros((0, 4), int), np.zeros((0, 2)), np.zeros(0))
     total = LEAVES_AT_FULL_AGE * og.height_fraction(age) ** 2
     per_anchor = max(2, int(round(total / len(anchors))))
-    cluster_r = max(0.38 * scale, 0.12)
+    cluster_r = max(0.46 * scale, 0.12)
 
     n = per_anchor * len(anchors)
     owner = np.repeat(np.arange(len(anchors)), per_anchor)

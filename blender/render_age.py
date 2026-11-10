@@ -41,10 +41,10 @@ def parse_args():
     p.add_argument("--leaf-scale", type=float, default=1.35)
     p.add_argument("--trunk-boost", type=float, default=3.0)
     p.add_argument("--sun", type=float, default=4.0)
-    p.add_argument("--sun-from", type=float, nargs=3, default=(-32.0, -12.0, 44.0),
-                   help="sun position (it shines towards the tree); high front-left models the crown and the bark")
+    p.add_argument("--sun-from", type=float, nargs=3, default=(-40.0, -30.0, 27.0),
+                   help="sun position (it shines towards the tree); front-left, low enough to reach the stem under the crown")
     p.add_argument("--rim", type=float, default=60000.0, help="warm back light power, W")
-    p.add_argument("--sky", type=float, default=0.55, help="sky dome strength (soft daylight fill)")
+    p.add_argument("--sky", type=float, default=0.8, help="sky dome strength (soft daylight fill)")
     p.add_argument("--fill", type=float, default=8000.0)
     return p.parse_args(argv)
 
@@ -108,9 +108,9 @@ def bark_material(tex: Path):
     # The scan is pale and mossy-green; keep its light/dark pattern, recolour it to oak grey-brown.
     luminance = nodes.new("ShaderNodeRGBToBW")
     oak_tone = nodes.new("ShaderNodeValToRGB")
-    oak_tone.color_ramp.elements[0].position = 0.15
+    oak_tone.color_ramp.elements[0].position = 0.06
     oak_tone.color_ramp.elements[0].color = (0.035, 0.026, 0.019, 1.0)
-    oak_tone.color_ramp.elements[1].position = 0.75
+    oak_tone.color_ramp.elements[1].position = 0.5
     oak_tone.color_ramp.elements[1].color = (0.40, 0.30, 0.215, 1.0)
     links.new(diff.outputs["Color"], luminance.inputs["Color"])
     links.new(luminance.outputs["Val"], oak_tone.inputs["Fac"])
@@ -147,8 +147,8 @@ def bark_material(tex: Path):
     links.new(nor.outputs["Color"], normal_map.inputs["Color"])
     links.new(age_of_wood.outputs["Result"], normal_map.inputs["Strength"])
     bump = nodes.new("ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 0.9
-    bump.inputs["Distance"].default_value = 0.045
+    bump.inputs["Strength"].default_value = 1.0
+    bump.inputs["Distance"].default_value = 0.12
     links.new(disp.outputs["Color"], bump.inputs["Height"])
     links.new(normal_map.outputs["Normal"], bump.inputs["Normal"])
     links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
