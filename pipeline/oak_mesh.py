@@ -2,7 +2,7 @@
 
 * tubes  — every branch chain becomes one tube (rings along the polyline, parallel-transport
            frames), UVs in metres of bark so the texture keeps its physical size at every age;
-           the trunk gets a lobed root flare and a few surface roots.
+           the trunk gets buttresses, fluting and forked surface roots.
 * leaves — oak-leaf cards clustered on the scan's real twig ends (scaled to the age); leaf size is
            the real 7–14 cm at every age (only the tree scales, leaves don't).
 
@@ -16,7 +16,7 @@ import oak_growth as og
 
 BARK_TILE_M = 0.6          # metres of bark covered by one bark texture tile
 LEAF_LENGTH_M = 0.11
-LEAVES_AT_FULL_AGE = 280_000
+LEAVES_AT_FULL_AGE = 380_000
 
 
 @dataclass(frozen=True)
@@ -53,49 +53,93 @@ def _frames(points: np.ndarray):
     return tang, normal, np.cross(tang, normal)
 
 
-def _flare(theta: np.ndarray, z: float, r0: float, phase: float) -> np.ndarray:
-    """Root-flare multiplier for a trunk ring at height z: wide lobed buttress at the ground."""
-    fade = np.exp(-max(z, 0.0) / (2.2 * r0))
-    lobes = np.maximum(np.cos(5.0 * theta + phase), 0.0) ** 2
-    return 1.0 + fade * (0.45 + 0.55 * lobes)
+@dataclass(frozen=True)
+class RootLayout:
+    """Where the buttresses stand around the stem: the flare lobes and the roots share it."""
+    angles: np.ndarray       # world angle of each buttress, radians
+    strength: np.ndarray     # 0..1, how heavy each one is
 
 
-def root_chains(trunk_radius: float, scale: float, rng: np.random.Generator) -> list:
-    """A handful of surface roots running out from the flare and diving into the soil."""
+def root_layout(seed: int, count: int = 9) -> RootLayout:
+    rng = np.random.default_rng(seed)
+    angles = (np.arange(count) + rng.uniform(-0.3, 0.3, count)) * 2 * np.pi / count
+    return RootLayout(angles, rng.uniform(0.55, 1.0, count))
+
+
+def _flare(world_angle: np.ndarray, z: float, r0: float, layout: RootLayout) -> np.ndarray:
+    """Radius multiplier for a trunk ring at height z.
+
+    At the ground the stem swells and throws out sharp buttresses (one per root); higher up they
+    broaden into the shallow fluting of an old oak stem and die out towards the first limbs.
+    """
+    h = max(z, 0.0) / r0
+    swell = 0.55 * np.exp(-h / 1.4)
+    sharp = 2.5 + 14.0 * np.exp(-h / 1.2)
+    amp = 0.85 * np.exp(-h / 1.8) + 0.10 * np.exp(-h / 9.0)
+    d = world_angle[:, None] - layout.angles[None, :]
+    lobes = (layout.strength[None, :] * np.exp(sharp * (np.cos(d) - 1.0))).max(axis=1)
+    ribs = 0.03 * np.exp(-h / 10.0) * np.cos(23.0 * world_angle + 1.7 * np.sin(0.9 * h))
+    return 1.0 + swell + amp * lobes + ribs
+
+
+def root_chains(trunk_radius: float, scale: float, layout: RootLayout, rng: np.random.Generator) -> list:
+    """Buttress roots: each leaves its flare lobe as a ridge, snakes outwards and dives into the soil.
+
+    The heavy ones fork once. Only what is above the ground is seen (the ground is a holdout).
+    """
     roots = []
-    for k in range(7):
-        ang = k * 2 * np.pi / 7 + rng.uniform(-0.25, 0.25)
-        reach = trunk_radius * rng.uniform(3.0, 5.0) + 0.25 * scale
-        t = np.linspace(0.0, 1.0, 9)
-        wobble = 0.08 * reach * np.sin(t * np.pi * rng.uniform(1.5, 3.0))
+
+    def one(ang: float, strength: float, start: np.ndarray, r_start: float, reach: float, steps: int = 16):
+        t = np.linspace(0.0, 1.0, steps)
         d = np.array([np.cos(ang), np.sin(ang), 0.0])
         side = np.array([-d[1], d[0], 0.0])
-        pts = (d[None] * (trunk_radius * 0.4 + reach * t)[:, None] + side[None] * wobble[:, None])
-        radii = trunk_radius * rng.uniform(0.3, 0.42) * (1 - t) ** 1.2 + 0.004
-        pts[:, 2] = radii * (0.45 - 1.6 * t ** 2)  # half-buried hump that dives into the soil
+        wobble = 0.10 * reach * np.sin(t * np.pi * rng.uniform(1.2, 2.6) + rng.uniform(0, 6.28)) * t
+        pts = start[None] + d[None] * (reach * t)[:, None] + side[None] * wobble[:, None]
+        radii = r_start * (1 - t) ** 0.9 + 0.006
+        pts[:, 2] = radii * (0.95 - 2.3 * t ** 1.3)  # rides high at the stem, then sinks
         roots.append(og.Chain(pts, radii, order=-1, ends_in_tip=False))  # -1: not the trunk
+        return pts, radii
+
+    for ang, strength in zip(layout.angles, layout.strength):
+        d = np.array([np.cos(ang), np.sin(ang), 0.0])
+        reach = trunk_radius * (3.5 + 3.5 * strength) + 0.3 * scale
+        r_start = trunk_radius * (0.34 + 0.26 * strength)
+        pts, radii = one(ang, strength, d * trunk_radius * 0.75, r_start, reach)
+        if strength > 0.72:
+            k = 6
+            fork = ang + rng.choice([-1.0, 1.0]) * rng.uniform(0.45, 0.8)
+            one(fork, strength, pts[k] * np.array([1.0, 1.0, 0.0]), radii[k] * 0.7, reach * 0.55, steps=10)
     return roots
 
 
-def tube_mesh(chains: list, trunk_flare: bool = True) -> MeshData:
+def _smooth(values: np.ndarray, passes: int) -> np.ndarray:
+    out = values.astype(np.float64).copy()
+    for _ in range(passes if len(out) > 2 else 0):
+        out[1:-1] = (out[:-2] + 2.0 * out[1:-1] + out[2:]) / 4.0
+    return out
+
+
+def tube_mesh(chains: list, layout: RootLayout, trunk_flare: bool = True) -> MeshData:
     verts, quads, uvs, values = [], [], [], []
     base = 0
     trunk_r0 = max(c.radii[0] for c in chains)
-    phase = 0.7
     for c_idx, chain in enumerate(chains):
         r_max = float(chain.radii.max())
         points, radii = _resample(chain.points, chain.radii, max(0.06, 3.0 * r_max) if r_max < 0.15 else 0.12)
         if len(points) < 2:
             continue
-        sides = int(np.clip(round(6 + r_max * 36), 5, 26))
+        # The scan's cylinders step down in radius; smoothed, the stem tapers instead of showing rings.
+        radii = _smooth(radii, 8 if r_max > 0.08 else 3)
+        is_trunk = trunk_flare and chain.order == 0 and np.linalg.norm(points[0, :2]) < 0.05 and points[0, 2] < 0.05
+        sides = 80 if is_trunk else int(np.clip(round(6 + r_max * 36), 5, 28))
         tang, normal, binormal = _frames(points)
         theta = np.linspace(0.0, 2 * np.pi, sides + 1)  # seam vertex duplicated for clean UVs
         cos, sin = np.cos(theta), np.sin(theta)
-        is_trunk = trunk_flare and chain.order == 0 and np.linalg.norm(points[0, :2]) < 0.05 and points[0, 2] < 0.05
         ring_r = np.repeat(radii[:, None], sides + 1, axis=1)
         if is_trunk:
             for k in range(len(points)):
-                ring_r[k] *= _flare(theta, points[k, 2], trunk_r0, phase)
+                out = cos[:, None] * normal[k][None, :] + sin[:, None] * binormal[k][None, :]
+                ring_r[k] *= _flare(np.arctan2(out[:, 1], out[:, 0]), points[k, 2], trunk_r0, layout)
         ring = (points[:, None, :]
                 + ring_r[..., None] * (cos[None, :, None] * normal[:, None, :] + sin[None, :, None] * binormal[:, None, :]))
         n_rings = len(points)
@@ -199,7 +243,7 @@ def _boost(chains: list, trunk_boost: float) -> list:
     """
     if trunk_boost == 1.0:
         return chains
-    share = {0: 1.0, 1: 0.55, 2: 0.25, 3: 0.1}
+    share = {0: 1.0, 1: 0.7, 2: 0.38, 3: 0.16}
     return [og.Chain(c.points, c.radii * (1.0 + (trunk_boost - 1.0) * share.get(c.order, 0.0)),
                      c.order, c.ends_in_tip) for c in chains]
 
@@ -211,6 +255,7 @@ def build_age(skel: og.Skeleton, pre: og.Precomputed, age: float, cards: list, s
     tree = og.grow(skel, pre, age)
     chains = _boost(og.branch_chains(skel, tree), trunk_boost)
     trunk_r = float(tree.radius.max()) * trunk_boost
-    chains = chains + root_chains(trunk_r, tree.scale, np.random.default_rng(seed))
+    layout = root_layout(seed)
+    chains = chains + root_chains(trunk_r, tree.scale, layout, np.random.default_rng(seed))
     anchors, anchor_dirs = twig_anchors(skel, tree.scale)
-    return tube_mesh(chains), leaf_quads(anchors, anchor_dirs, age, tree.scale, cards, rng, leaf_scale), tree
+    return tube_mesh(chains, layout), leaf_quads(anchors, anchor_dirs, age, tree.scale, cards, rng, leaf_scale), tree
