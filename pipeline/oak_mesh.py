@@ -86,6 +86,7 @@ def stem_shape(seed: int, count: int = 5) -> StemShape:
     step = 2 * np.pi / count
     angles = -np.pi / 2 + step * (np.arange(count) + 0.5) + rng.uniform(-0.2, 0.2, count)
     strength = rng.uniform(0.5, 1.0, count)
+    strength[int(rng.integers(count))] = 1.0   # one root is always the heavy one
     bend = rng.uniform(0.12, 0.4, count) * rng.choice([-1.0, 1.0], count)
     burrs = np.stack([rng.uniform(0, 2 * np.pi, 7), rng.uniform(1.0, 5.5, 7), rng.uniform(0.25, 0.5, 7),
                       rng.uniform(0.3, 0.7, 7), rng.uniform(0.04, 0.10, 7)], axis=1)
@@ -120,8 +121,8 @@ def _stem_profile(angle: np.ndarray, z: np.ndarray, shape: StemShape) -> np.ndar
     hh = h[:, :, None]
     strength = shape.strength[None, None, :]
     d = angle[:, :, None] - shape.angles[None, None, :] - shape.bend[None, None, :] * np.exp(-hh / 0.45)
-    sharp = 3.5 + (13.0 + 8.0 * strength) * np.exp(-hh / 0.6)
-    out = (strength * (1.02 * np.exp(-hh / 0.70) + 0.42 * np.exp(-hh / 0.26) + 0.10 * np.exp(-hh / 3.5))
+    sharp = 5.0 + (12.0 + 8.0 * strength) * np.exp(-hh / 1.3)
+    out = (strength * (1.00 * np.exp(-hh / 0.70) + 0.50 * np.exp(-hh / 0.26) + 0.17 * np.exp(-hh / 3.0))
            * (1.0 - 0.22 * np.exp(-hh / 0.05)))
     ridge = (out * np.exp(sharp * (np.cos(d) - 1.0))).max(axis=2)
     toe = 1.0 - 0.06 * np.exp(-h / 0.05)
@@ -196,6 +197,8 @@ def tube_mesh(chains: list, shape: StemShape, trunk_flare: bool = True) -> MeshD
                 step = np.where(chain.points[:-1, 2] < FOOT_HEIGHT * trunk_r0, 0.015, step)
         else:
             step = max(0.12, 4.0 * r_max)
+            if is_trunk:  # a sapling's root flare is a few centimetres high
+                step = np.where(chain.points[:-1, 2] < 3.0 * trunk_r0, max(0.2 * trunk_r0, 0.008), step)
         points, radii = _resample(chain.points, radii0, step)
         if len(points) < 2:
             continue
@@ -456,9 +459,11 @@ def _boost(chains: list, trunk_boost: float) -> list:
     for c in chains:
         boosted, parent_radius = c.radii * gain(c.order), c.parent_radius * gain(c.parent_order)
         length = float(np.linalg.norm(np.diff(c.points, axis=0), axis=1).sum())
-        if c.order > 0 and length < 6.0 * boosted[0]:
-            # A short snag stays a thin dead branch: boosted and collared, it is a horn on the stem.
-            boosted, parent_radius = np.minimum(boosted, max(length / 14.0, 0.03)), 0.0
+        if c.order > 0 and length - parent_radius < 8.0 * boosted[0]:
+            # A short snag (measured from where it leaves the bark) stays a thin dead branch:
+            # boosted and collared, it is a horn on the stem.
+            boosted = np.minimum(boosted, max((length - parent_radius) / 16.0, 0.03))
+            parent_radius = 0.0
         out.append(og.Chain(np.asarray(c.points), np.maximum(boosted, MIN_TWIG_RADIUS_M), c.order, c.ends_in_tip,
                             parent_radius, c.parent_order))
     return out
