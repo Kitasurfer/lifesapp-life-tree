@@ -112,7 +112,7 @@ def _stem_profile(angle: np.ndarray, z: np.ndarray, shape: StemShape) -> np.ndar
     for a, bh, sa, sh, amp_b in shape.burrs:
         da = np.angle(np.exp(1j * (angle - a)))
         burr += amp_b * np.exp(-(da / sa) ** 2 - ((h - bh) / sh) ** 2)
-    swell = 0.20 * np.exp(-h / 0.9) + 0.10 * np.exp(-h / 3.0)
+    swell = 0.13 * np.exp(-h / 0.9) + 0.10 * np.exp(-h / 3.0)
 
     # Buttress roots: ridges that stand out further and narrower the lower they are, in the concave
     # sweep of a root flare, and meet the soil steeply. Just above the soil each one rolls under
@@ -120,8 +120,8 @@ def _stem_profile(angle: np.ndarray, z: np.ndarray, shape: StemShape) -> np.ndar
     hh = h[:, :, None]
     strength = shape.strength[None, None, :]
     d = angle[:, :, None] - shape.angles[None, None, :] - shape.bend[None, None, :] * np.exp(-hh / 0.45)
-    sharp = 3.5 + (9.0 + 6.0 * strength) * np.exp(-hh / 0.6)
-    out = (strength * (0.95 * np.exp(-hh / 0.70) + 0.40 * np.exp(-hh / 0.26) + 0.10 * np.exp(-hh / 3.5))
+    sharp = 3.5 + (13.0 + 8.0 * strength) * np.exp(-hh / 0.6)
+    out = (strength * (1.02 * np.exp(-hh / 0.70) + 0.42 * np.exp(-hh / 0.26) + 0.10 * np.exp(-hh / 3.5))
            * (1.0 - 0.22 * np.exp(-hh / 0.05)))
     ridge = (out * np.exp(sharp * (np.cos(d) - 1.0))).max(axis=2)
     toe = 1.0 - 0.06 * np.exp(-h / 0.05)

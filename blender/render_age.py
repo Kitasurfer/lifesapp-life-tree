@@ -163,30 +163,33 @@ def bark_material(tex: Path):
     age_of_wood = map_range(nodes, links, radius, 0.012, 0.09)
     old = map_range(nodes, links, radius, 0.10, 0.75)      # 0 smooth-barked bough .. 1 the furrowed stem
 
-    # Furrows, in metres of bark: cells much longer than wide, edges wavy.
+    # Furrows, in metres of bark: the contour lines of a noise stretched along the wood. They run
+    # lengthwise for a forearm or two, wander, fork and rejoin, and never close into scales.
     metres = nodes.new("ShaderNodeUVMap")
     metres.uv_map = "Metres"
-    wobble = nodes.new("ShaderNodeTexNoise")
-    wobble.inputs["Scale"].default_value = 2.5
-    wobble.inputs["Detail"].default_value = 3.0
-    links.new(metres.outputs["UV"], wobble.inputs["Vector"])
-    bent = nodes.new("ShaderNodeVectorMath")
-    bent.operation = "MULTIPLY_ADD"
-    links.new(wobble.outputs["Color"], bent.inputs[0])
-    bent.inputs[1].default_value = (0.06, 0.30, 0.0)
-    links.new(metres.outputs["UV"], bent.inputs[2])
-    stretch = nodes.new("ShaderNodeMapping")
-    stretch.inputs["Scale"].default_value = (15.0, 2.6, 1.0)
-    links.new(bent.outputs["Vector"], stretch.inputs["Vector"])
-    cells = nodes.new("ShaderNodeTexVoronoi")
-    cells.voronoi_dimensions = "2D"
-    cells.feature = "DISTANCE_TO_EDGE"
-    cells.inputs["Scale"].default_value = 1.0
-    links.new(stretch.outputs["Vector"], cells.inputs["Vector"])
+
+    def furrows(across: float, along: float, width: float, offset: float):
+        stretch = nodes.new("ShaderNodeMapping")
+        stretch.inputs["Location"].default_value = (offset, offset * 0.37, 0.0)
+        stretch.inputs["Scale"].default_value = (across, along, 1.0)
+        links.new(metres.outputs["UV"], stretch.inputs["Vector"])
+        noise = nodes.new("ShaderNodeTexNoise")
+        noise.noise_dimensions = "2D"
+        noise.inputs["Scale"].default_value = 1.0
+        noise.inputs["Detail"].default_value = 2.5
+        noise.inputs["Roughness"].default_value = 0.55
+        noise.inputs["Distortion"].default_value = 0.6
+        links.new(stretch.outputs["Vector"], noise.inputs["Vector"])
+        off_contour = math(nodes, links, "ABSOLUTE", math(nodes, links, "SUBTRACT", noise.outputs["Fac"], 0.5))
+        return map_range(nodes, links, off_contour, 0.0, width)   # 0 on the furrow line .. 1 on a ridge
+
+    wide = furrows(7.0, 0.9, 0.085, 0.0)       # main furrows, a hand apart
+    fine = furrows(15.0, 2.2, 0.10, 31.0)      # cracks across the ridges
+    relief = math(nodes, links, "MULTIPLY", math(nodes, links, "POWER", wide, 0.7),
+                  map_range(nodes, links, fine, 0.0, 1.0, 0.72, 1.0))
     # 0 furrow floor .. 1 ridge top; no furrows at the UV seam (the pattern does not wrap round the wood)
     ridge = math(nodes, links, "SUBTRACT", 1.0, math(
-        nodes, links, "MULTIPLY", attribute(nodes, "seam"),
-        math(nodes, links, "SUBTRACT", 1.0, map_range(nodes, links, cells.outputs["Distance"], 0.015, 0.16))))
+        nodes, links, "MULTIPLY", attribute(nodes, "seam"), math(nodes, links, "SUBTRACT", 1.0, relief)))
 
     # The scan is pale and mossy-green; keep its light/dark pattern, recolour it to oak grey-brown.
     luminance = nodes.new("ShaderNodeRGBToBW")
@@ -194,18 +197,18 @@ def bark_material(tex: Path):
     oak_tone.color_ramp.elements[0].position = 0.06
     oak_tone.color_ramp.elements[0].color = (0.035, 0.027, 0.020, 1.0)
     oak_tone.color_ramp.elements[1].position = 0.5
-    oak_tone.color_ramp.elements[1].color = (0.36, 0.29, 0.22, 1.0)
+    oak_tone.color_ramp.elements[1].color = (0.37, 0.285, 0.20, 1.0)
     links.new(diff.outputs["Color"], luminance.inputs["Color"])
     links.new(luminance.outputs["Val"], oak_tone.inputs["Fac"])
     colour = mix_colour(nodes, links, age_of_wood, (0.13, 0.11, 0.085, 1.0), oak_tone.outputs["Color"])
 
     # Furrow floors are dark and damp; the ridge tops weather pale grey.
     in_furrow = math(nodes, links, "MULTIPLY", math(nodes, links, "SUBTRACT", 1.0, ridge), old)
-    colour = mix_colour(nodes, links, math(nodes, links, "MULTIPLY", in_furrow, 0.6),
-                        colour, (0.016, 0.012, 0.009, 1.0))
+    colour = mix_colour(nodes, links, math(nodes, links, "MULTIPLY", in_furrow, 0.5),
+                        colour, (0.03, 0.022, 0.016, 1.0))
     weathered = math(nodes, links, "MULTIPLY", math(nodes, links, "POWER", ridge, 3.0),
-                     math(nodes, links, "MULTIPLY", old, 0.22))
-    colour = mix_colour(nodes, links, weathered, colour, (0.38, 0.34, 0.28, 1.0))
+                     math(nodes, links, "MULTIPLY", old, 0.16))
+    colour = mix_colour(nodes, links, weathered, colour, (0.36, 0.31, 0.25, 1.0))
 
     # Big soft patches over the stem: no two metres of an old stem have the same tone.
     position = nodes.new("ShaderNodeNewGeometry")
@@ -220,7 +223,7 @@ def bark_material(tex: Path):
     lichen_noise.inputs["Scale"].default_value = 1.7
     lichen_noise.inputs["Detail"].default_value = 7.0
     links.new(position.outputs["Position"], lichen_noise.inputs["Vector"])
-    lichen = math(nodes, links, "MULTIPLY", map_range(nodes, links, lichen_noise.outputs["Fac"], 0.56, 0.70, 0.0, 0.45),
+    lichen = math(nodes, links, "MULTIPLY", map_range(nodes, links, lichen_noise.outputs["Fac"], 0.58, 0.72, 0.0, 0.35),
                   math(nodes, links, "MULTIPLY", old, ridge))
     colour = mix_colour(nodes, links, lichen, colour, (0.30, 0.34, 0.24, 1.0))
     # Moss creeps up from the soil over the root flare, in patches, mostly on the ridge tops.
@@ -245,7 +248,7 @@ def bark_material(tex: Path):
     # Relief: furrows carry it on old wood, the photoscan's own height adds the fine grain.
     grain = math(nodes, links, "MULTIPLY", disp.outputs["Color"], 0.35)
     height = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", ridge, 0.65), grain)
-    depth = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", old, 0.06),
+    depth = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", old, 0.075),
                  math(nodes, links, "MULTIPLY", age_of_wood, 0.008))
     displacement = nodes.new("ShaderNodeDisplacement")
     displacement.inputs["Midlevel"].default_value = 0.75   # furrows cut in; ridges hardly stand out
@@ -284,7 +287,7 @@ def leaf_material(tex: Path):
                  math(nodes, links, "MULTIPLY", map_range(nodes, links, rand, 0.0, 1.0, 0.85, 1.15),
                       map_range(nodes, links, tint, 0.0, 1.0, 1.08, 0.92)))
     hsv = nodes.new("ShaderNodeHueSaturation")
-    hsv.inputs["Saturation"].default_value = 1.08
+    hsv.inputs["Saturation"].default_value = 1.03
     links.new(hue, hsv.inputs["Hue"])
     links.new(value, hsv.inputs["Value"])
     links.new(color.outputs["Color"], hsv.inputs["Color"])
