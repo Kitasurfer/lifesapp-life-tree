@@ -11,19 +11,27 @@ the tree they can still grow into.
 
 1. `pipeline/oak_growth.py` — reverse growth of the scanned skeleton: young = trunk + main limbs of the
    same oak, finer twigs appear with age; height follows an oak height curve, stem thickness follows
-   allometry + the pipe model.
-2. `pipeline/oak_mesh.py` — bark tubes (UVs in metres of bark, lobed root flare, surface roots) and
-   clumps of real-size oak-leaf cards at the growing tips.
-3. `blender/render_age.py` — builds the scene from scratch: photoscanned bark and leaves, warm key
-   light, mint (#4EEEB0) back light, transparent film + shadow catcher, one camera for all ages.
+   allometry + the pipe model. Twigs that carry leaves at an age exist at that age.
+2. `pipeline/oak_mesh.py` — bark tubes and leaves. The stem is a veteran's: a bole that holds its girth
+   to the main fork and keeps thickening after the height has stopped, an irregular section, a root
+   flare of a few uneven buttresses (the stem's own surface, no root pipes), limbs leaving through
+   collars. Leaves are oak-leaf cards in rosettes on shoots at the scan's real twig ends; the shaded
+   interior and low-frequency pockets carry little, so foliage gathers into pads with sky and limbs
+   between them. One fixed set of leaves serves every age — a leaf at 40 is the same leaf at 80.
+3. `blender/render_age.py` — builds the scene from scratch: photoscanned bark with furrows displaced
+   into old wood, leaves toned by their depth in the crown (paler underside, light shining through),
+   sun + graded sky dome + meadow bounce, transparent film cut at the ground, one camera for all ages
+   (`pipeline/oak_camera.py`).
 4. `tools/composite.py` — preview exactly as in the app (dark card, glow, silhouette).
+5. `tools/preview_geometry.py` — the geometry of one age in seconds, without Blender (silhouette, stem,
+   where the foliage gathers); light and materials only show in the Cycles render.
 
 ## Run
 
 Actions → **render** → *Run workflow* (inputs: ages, samples, resolution %, extra flags), or:
 
 ```bash
-gh workflow run render -f ages=10,30,50,80 -f samples=64 -f percent=50
+gh workflow run render -f ages=20,40,60,80 -f samples=128 -f percent=100
 gh run download --name preview
 ```
 
