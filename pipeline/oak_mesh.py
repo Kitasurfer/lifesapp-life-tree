@@ -458,7 +458,7 @@ def _boost(chains: list, trunk_boost: float) -> list:
         length = float(np.linalg.norm(np.diff(c.points, axis=0), axis=1).sum())
         if c.order > 0 and length < 6.0 * boosted[0]:
             # A short snag stays a thin dead branch: boosted and collared, it is a horn on the stem.
-            boosted, parent_radius = np.minimum(boosted, np.maximum(c.radii, length / 8.0)), 0.0
+            boosted, parent_radius = np.minimum(boosted, max(length / 14.0, 0.03)), 0.0
         out.append(og.Chain(np.asarray(c.points), np.maximum(boosted, MIN_TWIG_RADIUS_M), c.order, c.ends_in_tip,
                             parent_radius, c.parent_order))
     return out
