@@ -10,7 +10,7 @@ and the tree's shadow (dark/light theme).
 """
 import argparse
 import json
-import math
+import math as _math
 import sys
 import time
 from pathlib import Path
@@ -21,6 +21,7 @@ from mathutils import Vector
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pipeline"))
+import oak_camera as oc  # noqa: E402
 import oak_growth as og  # noqa: E402
 import oak_mesh as om  # noqa: E402
 
@@ -38,14 +39,18 @@ def parse_args():
     p.add_argument("--percent", type=int, default=100)
     p.add_argument("--width", type=int, default=1080)
     p.add_argument("--height", type=int, default=1440)
-    p.add_argument("--leaf-scale", type=float, default=1.35)
+    p.add_argument("--leaf-scale", type=float, default=1.8,
+                   help="leaf size against the real 11 cm: larger, so single leaves read in a 1080 px frame")
+    p.add_argument("--leaves", type=int, default=om.LEAVES_AT_FULL_AGE, help="leaves on the full-age tree")
+    p.add_argument("--gaps", type=float, default=1.0, help="0 = closed shell of foliage, 1 = pads with openings")
     p.add_argument("--trunk-boost", type=float, default=3.0)
-    p.add_argument("--sun", type=float, default=4.0)
-    p.add_argument("--sun-from", type=float, nargs=3, default=(-40.0, -30.0, 27.0),
+    p.add_argument("--sun", type=float, default=4.5)
+    p.add_argument("--sun-from", type=float, nargs=3, default=(-42.0, -34.0, 34.0),
                    help="sun position (it shines towards the tree); front-left, low enough to reach the stem under the crown")
-    p.add_argument("--rim", type=float, default=60000.0, help="warm back light power, W")
-    p.add_argument("--sky", type=float, default=0.8, help="sky dome strength (soft daylight fill)")
-    p.add_argument("--fill", type=float, default=8000.0)
+    p.add_argument("--sky", type=float, default=1.0, help="sky dome strength (soft daylight fill)")
+    p.add_argument("--rim", type=float, default=0.0, help="warm back light power, W (0 = daylight only)")
+    p.add_argument("--fill", type=float, default=0.0, help="cool front fill power, W (0 = daylight only)")
+    p.add_argument("--exposure", type=float, default=0.0)
     return p.parse_args(argv)
 
 
@@ -56,8 +61,12 @@ def make_mesh(name: str, data: om.MeshData, value_attr: str, material) -> bpy.ty
     me.from_pydata(data.verts.tolist(), [], data.quads.tolist())
     uv = me.uv_layers.new(name="UVMap")
     uv.data.foreach_set("uv", data.loop_uv.astype(np.float32).ravel())
-    attr = me.attributes.new(name=value_attr, type="FLOAT", domain="POINT")
-    attr.data.foreach_set("value", data.point_value.astype(np.float32))
+    if data.loop_uv_m is not None:
+        metres = me.uv_layers.new(name="Metres")
+        metres.data.foreach_set("uv", data.loop_uv_m.astype(np.float32).ravel())
+    for attr_name, values in {value_attr: data.point_value, **data.extra}.items():
+        attr = me.attributes.new(name=attr_name, type="FLOAT", domain="POINT")
+        attr.data.foreach_set("value", values.astype(np.float32))
     me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), dtype=bool))
     me.validate()
     me.update()
@@ -84,78 +93,175 @@ def mix_rgba(nodes):
     return node, node.inputs["Factor"], a, b, out
 
 
+def attribute(nodes, name: str):
+    node = nodes.new("ShaderNodeAttribute")
+    node.attribute_name = name
+    return node.outputs["Fac"]
+
+
+def map_range(nodes, links, value, from_min, from_max, to_min=0.0, to_max=1.0):
+    node = nodes.new("ShaderNodeMapRange")
+    for key, v in (("From Min", from_min), ("From Max", from_max), ("To Min", to_min), ("To Max", to_max)):
+        node.inputs[key].default_value = v
+    links.new(value, node.inputs["Value"])
+    return node.outputs["Result"]
+
+
+def math(nodes, links, op: str, a, b=None, clamp: bool = False):
+    node = nodes.new("ShaderNodeMath")
+    node.operation = op
+    node.use_clamp = clamp
+    for socket, v in zip(node.inputs, (a, b)):
+        if v is None:
+            continue
+        if isinstance(v, (int, float)):
+            socket.default_value = v
+        else:
+            links.new(v, socket)
+    return node.outputs["Value"]
+
+
+def mix_colour(nodes, links, fac, a, b, blend: str = "MIX"):
+    node, f, sa, sb, out = mix_rgba(nodes)
+    node.blend_type = blend
+    for socket, v in ((f, fac), (sa, a), (sb, b)):
+        if isinstance(v, float):
+            socket.default_value = v
+        elif isinstance(v, tuple):
+            socket.default_value = v
+        else:
+            links.new(v, socket)
+    return out
+
+
+def set_displacement(mat) -> None:
+    for owner in (mat, getattr(mat, "cycles", None)):  # the setting moved between Blender versions
+        if owner is not None and hasattr(owner, "displacement_method"):
+            owner.displacement_method = "BOTH"
+            return
+
+
 def bark_material(tex: Path):
+    """Old oak bark: the photoscan for texture and tone, deep lengthwise furrows as real relief.
+
+    Thin young wood is smooth and grey-olive. The thicker (older) the wood, the deeper it is
+    furrowed: ridges a hand wide run along the stem, split and rejoin; the furrows between them
+    are displaced geometry on the stem and limbs, so they catch the light and break the outline.
+    """
     mat = bpy.data.materials.new("Bark")
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     bsdf = nodes["Principled BSDF"]
+    output = nodes["Material Output"]
     d = tex / "bark"
     diff = image_node(nodes, d / "jolcham_oak_bark_01_diff_2k.jpg", False)
     rough = image_node(nodes, d / "jolcham_oak_bark_01_rough_2k.jpg", True)
     nor = image_node(nodes, d / "jolcham_oak_bark_01_nor_gl_2k.jpg", True)
     disp = image_node(nodes, d / "jolcham_oak_bark_01_disp_2k.jpg", True)
 
-    # Young, thin wood is smooth and grey-olive; the fissured mossy bark belongs to old thick wood.
-    radius = nodes.new("ShaderNodeAttribute")
-    radius.attribute_name = "radius"
-    age_of_wood = nodes.new("ShaderNodeMapRange")
-    age_of_wood.inputs["From Min"].default_value = 0.012
-    age_of_wood.inputs["From Max"].default_value = 0.09
-    links.new(radius.outputs["Fac"], age_of_wood.inputs["Value"])
-    _, fac, a, b, out = mix_rgba(nodes)
-    a.default_value = (0.13, 0.11, 0.085, 1.0)
-    links.new(age_of_wood.outputs["Result"], fac)
+    radius = attribute(nodes, "radius")
+    age_of_wood = map_range(nodes, links, radius, 0.012, 0.09)
+    old = map_range(nodes, links, radius, 0.10, 0.75)      # 0 smooth-barked bough .. 1 the furrowed stem
+
+    # Furrows, in metres of bark: cells much longer than wide, edges wavy.
+    metres = nodes.new("ShaderNodeUVMap")
+    metres.uv_map = "Metres"
+    wobble = nodes.new("ShaderNodeTexNoise")
+    wobble.inputs["Scale"].default_value = 2.5
+    wobble.inputs["Detail"].default_value = 3.0
+    links.new(metres.outputs["UV"], wobble.inputs["Vector"])
+    bent = nodes.new("ShaderNodeVectorMath")
+    bent.operation = "MULTIPLY_ADD"
+    links.new(wobble.outputs["Color"], bent.inputs[0])
+    bent.inputs[1].default_value = (0.10, 0.25, 0.0)
+    links.new(metres.outputs["UV"], bent.inputs[2])
+    stretch = nodes.new("ShaderNodeMapping")
+    stretch.inputs["Scale"].default_value = (9.5, 1.5, 1.0)
+    links.new(bent.outputs["Vector"], stretch.inputs["Vector"])
+    cells = nodes.new("ShaderNodeTexVoronoi")
+    cells.voronoi_dimensions = "2D"
+    cells.feature = "DISTANCE_TO_EDGE"
+    cells.inputs["Scale"].default_value = 1.0
+    links.new(stretch.outputs["Vector"], cells.inputs["Vector"])
+    # 0 furrow floor .. 1 ridge top; no furrows at the UV seam (the pattern does not wrap round the wood)
+    ridge = math(nodes, links, "SUBTRACT", 1.0, math(
+        nodes, links, "MULTIPLY", attribute(nodes, "seam"),
+        math(nodes, links, "SUBTRACT", 1.0, map_range(nodes, links, cells.outputs["Distance"], 0.02, 0.22))))
+
     # The scan is pale and mossy-green; keep its light/dark pattern, recolour it to oak grey-brown.
     luminance = nodes.new("ShaderNodeRGBToBW")
     oak_tone = nodes.new("ShaderNodeValToRGB")
     oak_tone.color_ramp.elements[0].position = 0.06
-    oak_tone.color_ramp.elements[0].color = (0.035, 0.026, 0.019, 1.0)
+    oak_tone.color_ramp.elements[0].color = (0.035, 0.027, 0.020, 1.0)
     oak_tone.color_ramp.elements[1].position = 0.5
-    oak_tone.color_ramp.elements[1].color = (0.40, 0.30, 0.215, 1.0)
+    oak_tone.color_ramp.elements[1].color = (0.36, 0.29, 0.22, 1.0)
     links.new(diff.outputs["Color"], luminance.inputs["Color"])
     links.new(luminance.outputs["Val"], oak_tone.inputs["Fac"])
-    links.new(oak_tone.outputs["Color"], b)
-    # Moss creeps up from the soil over the roots and the foot of the stem, in patches.
+    colour = mix_colour(nodes, links, age_of_wood, (0.13, 0.11, 0.085, 1.0), oak_tone.outputs["Color"])
+
+    # Furrow floors are dark and damp; the ridge tops weather pale grey.
+    in_furrow = math(nodes, links, "MULTIPLY", math(nodes, links, "SUBTRACT", 1.0, ridge), old)
+    colour = mix_colour(nodes, links, math(nodes, links, "MULTIPLY", in_furrow, 0.8),
+                        colour, (0.016, 0.012, 0.009, 1.0))
+    weathered = math(nodes, links, "MULTIPLY", math(nodes, links, "POWER", ridge, 3.0),
+                     math(nodes, links, "MULTIPLY", old, 0.35))
+    colour = mix_colour(nodes, links, weathered, colour, (0.40, 0.37, 0.32, 1.0))
+
+    # Big soft patches over the stem: no two metres of an old stem have the same tone.
     position = nodes.new("ShaderNodeNewGeometry")
+    tone = nodes.new("ShaderNodeTexNoise")
+    tone.inputs["Scale"].default_value = 0.55
+    tone.inputs["Detail"].default_value = 4.0
+    links.new(position.outputs["Position"], tone.inputs["Vector"])
+    colour = mix_colour(nodes, links, 1.0, colour,
+                        map_range(nodes, links, tone.outputs["Fac"], 0.3, 0.7, 0.62, 1.2), "MULTIPLY")
+    # Grey-green lichen on the weather side of the old wood, in patches.
+    lichen_noise = nodes.new("ShaderNodeTexNoise")
+    lichen_noise.inputs["Scale"].default_value = 1.7
+    lichen_noise.inputs["Detail"].default_value = 7.0
+    links.new(position.outputs["Position"], lichen_noise.inputs["Vector"])
+    lichen = math(nodes, links, "MULTIPLY", map_range(nodes, links, lichen_noise.outputs["Fac"], 0.56, 0.70, 0.0, 0.45),
+                  math(nodes, links, "MULTIPLY", old, ridge))
+    colour = mix_colour(nodes, links, lichen, colour, (0.30, 0.34, 0.24, 1.0))
+    # Moss creeps up from the soil over the root flare, in patches, mostly on the ridge tops.
     xyz = nodes.new("ShaderNodeSeparateXYZ")
     links.new(position.outputs["Position"], xyz.inputs["Vector"])
-    low = nodes.new("ShaderNodeMapRange")
-    low.inputs["From Min"].default_value = 0.0
-    low.inputs["From Max"].default_value = 1.6
-    low.inputs["To Min"].default_value = 0.85
-    low.inputs["To Max"].default_value = 0.0
-    links.new(xyz.outputs["Z"], low.inputs["Value"])
+    low = map_range(nodes, links, xyz.outputs["Z"], 0.0, 1.3, 0.75, 0.0)
     patches = nodes.new("ShaderNodeTexNoise")
     patches.inputs["Scale"].default_value = 2.2
     patches.inputs["Detail"].default_value = 6.0
-    patchy = nodes.new("ShaderNodeMapRange")
-    patchy.inputs["From Min"].default_value = 0.42
-    patchy.inputs["From Max"].default_value = 0.62
-    links.new(patches.outputs["Fac"], patchy.inputs["Value"])
-    moss_amount = nodes.new("ShaderNodeMath")
-    moss_amount.operation = "MULTIPLY"
-    links.new(low.outputs["Result"], moss_amount.inputs[0])
-    links.new(patchy.outputs["Result"], moss_amount.inputs[1])
-    _, moss_fac, moss_a, moss_b, moss_out = mix_rgba(nodes)
-    moss_b.default_value = (0.085, 0.14, 0.03, 1.0)
-    links.new(moss_amount.outputs["Value"], moss_fac)
-    links.new(out, moss_a)
-    links.new(moss_out, bsdf.inputs["Base Color"])
+    links.new(position.outputs["Position"], patches.inputs["Vector"])
+    moss = math(nodes, links, "MULTIPLY", low, map_range(nodes, links, patches.outputs["Fac"], 0.42, 0.62))
+    moss = math(nodes, links, "MULTIPLY", moss, map_range(nodes, links, ridge, 0.0, 1.0, 0.45, 1.0))
+    colour = mix_colour(nodes, links, moss, colour, (0.075, 0.115, 0.03, 1.0))
+    links.new(colour, bsdf.inputs["Base Color"])
     links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
 
     normal_map = nodes.new("ShaderNodeNormalMap")
     links.new(nor.outputs["Color"], normal_map.inputs["Color"])
-    links.new(age_of_wood.outputs["Result"], normal_map.inputs["Strength"])
-    bump = nodes.new("ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 1.0
-    bump.inputs["Distance"].default_value = 0.12
-    links.new(disp.outputs["Color"], bump.inputs["Height"])
-    links.new(normal_map.outputs["Normal"], bump.inputs["Normal"])
-    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    links.new(age_of_wood, normal_map.inputs["Strength"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+
+    # Relief: furrows carry it on old wood, the photoscan's own height adds the fine grain.
+    grain = math(nodes, links, "MULTIPLY", disp.outputs["Color"], 0.35)
+    height = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", ridge, 0.65), grain)
+    depth = math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", old, 0.085),
+                 math(nodes, links, "MULTIPLY", age_of_wood, 0.008))
+    displacement = nodes.new("ShaderNodeDisplacement")
+    displacement.inputs["Midlevel"].default_value = 0.75   # furrows cut in; ridges hardly stand out
+    links.new(height, displacement.inputs["Height"])
+    links.new(depth, displacement.inputs["Scale"])
+    links.new(displacement.outputs["Displacement"], output.inputs["Displacement"])
+    set_displacement(mat)
     return mat
 
 
 def leaf_material(tex: Path):
+    """Oak leaves: a dark waxy upper side, a paler matt underside, light shining through.
+
+    Tone follows where a leaf grows: deep in the crown leaves are darker and bluer, on the lit
+    outside lighter and more yellow; neighbouring sprays share a tone, single leaves vary a little.
+    """
     mat = bpy.data.materials.new("OakLeaf")
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
@@ -169,38 +275,49 @@ def leaf_material(tex: Path):
     normal = image_node(nodes, pick("_NormalGL"), True)
     rough = image_node(nodes, pick("_Roughness"), True)
 
-    # The atlas leaves are pale spring green; push them to a deep summer oak green with a little
-    # per-leaf variation so the crown doesn't look cloned.
-    rand = nodes.new("ShaderNodeAttribute")
-    rand.attribute_name = "leaf_rand"
-    hue = nodes.new("ShaderNodeMapRange")
-    hue.inputs["To Min"].default_value = 0.505
-    hue.inputs["To Max"].default_value = 0.555
-    value = nodes.new("ShaderNodeMapRange")
-    value.inputs["To Min"].default_value = 0.42
-    value.inputs["To Max"].default_value = 0.72
-    links.new(rand.outputs["Fac"], hue.inputs["Value"])
-    links.new(rand.outputs["Fac"], value.inputs["Value"])
+    rand, depth, tint = attribute(nodes, "leaf_rand"), attribute(nodes, "leaf_depth"), attribute(nodes, "leaf_tint")
+    # The atlas leaves are pale spring green: turn them to summer oak green (hue 0.5 = unchanged).
+    hue = math(nodes, links, "ADD", map_range(nodes, links, tint, 0.0, 1.0, 0.500, 0.545),
+               math(nodes, links, "ADD", math(nodes, links, "MULTIPLY", depth, 0.02),
+                    map_range(nodes, links, rand, 0.0, 1.0, -0.008, 0.008)))
+    value = math(nodes, links, "MULTIPLY", map_range(nodes, links, depth, 0.0, 1.0, 0.66, 0.40),
+                 math(nodes, links, "MULTIPLY", map_range(nodes, links, rand, 0.0, 1.0, 0.85, 1.15),
+                      map_range(nodes, links, tint, 0.0, 1.0, 1.08, 0.92)))
     hsv = nodes.new("ShaderNodeHueSaturation")
-    hsv.inputs["Saturation"].default_value = 1.15
-    links.new(hue.outputs["Result"], hsv.inputs["Hue"])
-    links.new(value.outputs["Result"], hsv.inputs["Value"])
+    hsv.inputs["Saturation"].default_value = 1.08
+    links.new(hue, hsv.inputs["Hue"])
+    links.new(value, hsv.inputs["Value"])
     links.new(color.outputs["Color"], hsv.inputs["Color"])
-    links.new(hsv.outputs["Color"], bsdf.inputs["Base Color"])
-    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
-    for name in ("Specular IOR Level", "Specular"):  # waxy, not glossy: no white glints from the rim
+    upper = hsv.outputs["Color"]
+    # Underside: paler, greyer, no gloss.
+    under = nodes.new("ShaderNodeHueSaturation")
+    under.inputs["Saturation"].default_value = 0.72
+    under.inputs["Value"].default_value = 1.35
+    links.new(upper, under.inputs["Color"])
+    geometry = nodes.new("ShaderNodeNewGeometry")
+    side = mix_colour(nodes, links, geometry.outputs["Backfacing"], upper, under.outputs["Color"])
+    links.new(side, bsdf.inputs["Base Color"])
+    links.new(math(nodes, links, "MAXIMUM", rough.outputs["Color"],
+                   math(nodes, links, "MULTIPLY", geometry.outputs["Backfacing"], 0.8)), bsdf.inputs["Roughness"])
+    for name in ("Specular IOR Level", "Specular"):  # waxy, not glossy: a sheen, no white glints
         if name in bsdf.inputs:
-            bsdf.inputs[name].default_value = 0.2
+            bsdf.inputs[name].default_value = 0.3
             break
     nmap = nodes.new("ShaderNodeNormalMap")
     nmap.inputs["Strength"].default_value = 0.6
     links.new(normal.outputs["Color"], nmap.inputs["Color"])
     links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
 
+    # Light through a leaf is warmer and more saturated than light off it.
+    through = nodes.new("ShaderNodeHueSaturation")
+    through.inputs["Hue"].default_value = 0.485
+    through.inputs["Saturation"].default_value = 1.2
+    through.inputs["Value"].default_value = 1.25
+    links.new(upper, through.inputs["Color"])
     translucent = nodes.new("ShaderNodeBsdfTranslucent")
-    links.new(hsv.outputs["Color"], translucent.inputs["Color"])
+    links.new(through.outputs["Color"], translucent.inputs["Color"])
     lit = nodes.new("ShaderNodeMixShader")
-    lit.inputs["Fac"].default_value = 0.5
+    lit.inputs["Fac"].default_value = 0.45
     links.new(bsdf.outputs["BSDF"], lit.inputs[1])
     links.new(translucent.outputs["BSDF"], lit.inputs[2])
     cutout = nodes.new("ShaderNodeMixShader")
@@ -230,39 +347,39 @@ def point_light(name, kind, energy, colour, location, target, size=None):
 
 
 def frame_camera(scene, full_points: np.ndarray, width: int, height: int):
-    """Straight verticals (no tilt): horizontal camera + lens shift, framed on the full-age tree.
-
-    Framing is solved in projection, so crown parts nearer the camera (which look bigger) still fit.
-    """
-    lens, sensor = 50.0, 36.0
-    top, bottom, side = 0.05, 0.10, 0.06
-    eye = 1.6
-    aspect = width / height
-    pts = full_points[np.random.default_rng(0).choice(len(full_points), min(len(full_points), 200_000), replace=False)]
-    x_c = 0.0  # the stem stands on the centre line of every frame
-    distance = 40.0
-    for _ in range(6):
-        k = distance / (distance + pts[:, 1])           # perspective scale towards the y=0 plane
-        x = x_c + (pts[:, 0] - x_c) * k
-        z = eye + (pts[:, 2] - eye) * k
-        xmin, xmax = np.percentile(x, [0.02, 99.98])
-        zmax = float(np.percentile(z, 99.98))
-        frame_h = max(zmax / (1 - top - bottom), 2 * max(abs(xmin), abs(xmax)) / (1 - 2 * side) / aspect)
-        distance = frame_h / (sensor / lens)
-    centre_z = -bottom * frame_h + frame_h / 2
-
+    """The fixed camera of every frame (pipeline/oak_camera.py), framed on the full-age tree."""
+    framing = oc.solve(full_points, width, height)
     cam = bpy.data.cameras.new("Camera")
-    cam.lens = lens
+    cam.lens = oc.LENS_MM
     cam.sensor_fit = "VERTICAL"
-    cam.sensor_height = sensor
-    cam.shift_y = (centre_z - eye) / frame_h
-    cam.clip_end = distance * 4
+    cam.sensor_height = oc.SENSOR_MM
+    cam.shift_y = framing.shift_y
+    cam.clip_end = framing.distance * 4
     obj = bpy.data.objects.new("Camera", cam)
-    obj.location = (x_c, -distance, eye)
-    obj.rotation_euler = (math.pi / 2, 0.0, 0.0)
+    obj.location = (framing.x_c, -framing.distance, oc.EYE_M)
+    obj.rotation_euler = (_math.pi / 2, 0.0, 0.0)
     scene.collection.objects.link(obj)
     scene.camera = obj
-    return {"frame_height_m": float(frame_h), "distance_m": float(distance), "x_centre_m": x_c}
+    return {"frame_height_m": framing.frame_h, "distance_m": framing.distance, "x_centre_m": framing.x_c}
+
+
+def sky(scene, strength: float) -> None:
+    """Daylight dome: pale and bright at the horizon, deeper blue overhead."""
+    world = bpy.data.worlds.new("World")
+    world.use_nodes = True
+    nodes, links = world.node_tree.nodes, world.node_tree.links
+    direction = nodes.new("ShaderNodeTexCoord")
+    xyz = nodes.new("ShaderNodeSeparateXYZ")
+    links.new(direction.outputs["Generated"], xyz.inputs["Vector"])
+    ramp = nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = 0.0
+    ramp.color_ramp.elements[0].color = (0.80, 0.87, 0.96, 1.0)
+    ramp.color_ramp.elements[1].position = 0.7
+    ramp.color_ramp.elements[1].color = (0.36, 0.57, 1.0, 1.0)
+    links.new(xyz.outputs["Z"], ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"], nodes["Background"].inputs["Color"])
+    nodes["Background"].inputs["Strength"].default_value = strength
+    scene.world = world
 
 
 def main() -> None:
@@ -274,7 +391,7 @@ def main() -> None:
     cards = [om.LeafCard(**c) for c in json.loads((args.textures / "leaf_cards.json").read_text())]
     skel = og.straighten(og.load_npz(args.npz))
     pre = og.precompute(skel)
-    look = dict(leaf_scale=args.leaf_scale, trunk_boost=args.trunk_boost)
+    look = dict(leaf_scale=args.leaf_scale, trunk_boost=args.trunk_boost, leaves=args.leaves, gaps=args.gaps)
     full_tubes, full_leaves, _ = om.build_age(skel, pre, og.FULL_AGE, cards, **look)
     tubes, leaves, tree = om.build_age(skel, pre, args.age, cards, **look)
     t_geo = time.time()
@@ -285,12 +402,12 @@ def main() -> None:
 
     ground = bpy.data.meshes.new("Ground")
     ground.from_pydata([(-200, -200, 0), (200, -200, 0), (200, 200, 0), (-200, 200, 0)], [], [(0, 1, 2, 3)])
-    # Holdout soil: it bounces a little green light onto the bark and cuts the frame at the ground,
+    # Holdout soil: it bounces green meadow light up under the crown and cuts the frame at the ground,
     # so buried root ends are not in the PNG (seen through an invisible ground they were flat blades).
     # No shadow catcher: the app draws its own ground and the tree's shadow in both themes.
     soil = bpy.data.materials.new("Soil")
     soil.use_nodes = True
-    soil.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.05, 0.09, 0.03, 1.0)
+    soil.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.10, 0.15, 0.05, 1.0)
     soil.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 1.0
     ground.materials.append(soil)
     ground_obj = bpy.data.objects.new("Ground", ground)
@@ -300,15 +417,12 @@ def main() -> None:
     framing = frame_camera(scene, np.vstack([full_tubes.verts, full_leaves.verts]), args.width, args.height)
     height = float(full_tubes.verts[:, 2].max())
     point_light("Key", "SUN", args.sun, (1.0, 0.93, 0.82), tuple(args.sun_from), (0.0, 0.0, 0.0))
-    scene.objects["Key"].data.angle = math.radians(3.0)
-    point_light("Rim", "AREA", args.rim, WARM, (0.0, 24.0, height * 0.75), (0.0, -10.0, height * 0.5), size=14.0)
-    point_light("Fill", "AREA", args.fill, (0.85, 0.95, 1.0), (15.0, -35.0, 12.0), (0.0, 0.0, height * 0.4), size=30.0)
-
-    world = bpy.data.worlds.new("World")
-    world.use_nodes = True
-    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.62, 0.78, 1.0, 1.0)
-    world.node_tree.nodes["Background"].inputs["Strength"].default_value = args.sky
-    scene.world = world
+    scene.objects["Key"].data.angle = _math.radians(1.2)
+    if args.rim > 0:
+        point_light("Rim", "AREA", args.rim, WARM, (0.0, 24.0, height * 0.75), (0.0, -10.0, height * 0.5), size=14.0)
+    if args.fill > 0:
+        point_light("Fill", "AREA", args.fill, (0.85, 0.95, 1.0), (15.0, -35.0, 12.0), (0.0, 0.0, height * 0.4), size=30.0)
+    sky(scene, args.sky)
 
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -316,8 +430,10 @@ def main() -> None:
     scene.cycles.use_adaptive_sampling = True
     scene.cycles.use_denoising = True
     scene.cycles.denoiser = "OPENIMAGEDENOISE"
-    scene.cycles.max_bounces = 6
-    scene.cycles.transparent_max_bounces = 16
+    scene.cycles.max_bounces = 8
+    scene.cycles.diffuse_bounces = 4
+    scene.cycles.transmission_bounces = 8
+    scene.cycles.transparent_max_bounces = 32
     scene.render.film_transparent = True
     scene.render.resolution_x = args.width
     scene.render.resolution_y = args.height
@@ -325,6 +441,7 @@ def main() -> None:
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_mode = "RGBA"
     scene.view_settings.view_transform = "AgX"
+    scene.view_settings.exposure = args.exposure
     for look in ("AgX - Medium High Contrast", "Medium High Contrast"):
         try:
             scene.view_settings.look = look

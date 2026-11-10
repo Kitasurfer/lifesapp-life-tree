@@ -172,15 +172,25 @@ class AgedTree:
     scale: float
 
 
-def grow(skel: Skeleton, pre: Precomputed, age: float, min_radius: float = 0.0015) -> AgedTree:
+def grow(skel: Skeleton, pre: Precomputed, age: float, min_radius: float = 0.0015,
+         leafy=None) -> AgedTree:
+    """`leafy` (bool per cylinder): twig ends that carry leaves at this age. They and the twigs
+    leading to them exist too, so no leaf hangs in the air; the size of the tree still comes from
+    the framework alone."""
     total = float(pre.tips_full.max())
     alive = pre.tips_full >= tip_threshold(age, total) - 1e-9
-    tips = _tips_downstream(skel.parent, pre.order_idx, alive)
 
     full_end = skel.start + skel.axis * skel.length[:, None]
     full_height = float(full_end[:, 2].max())
     kept_height = max(float(full_end[alive, 2].max()), 1e-3)
     scale = height_fraction(age) * full_height / kept_height
+
+    if leafy is not None:
+        alive = alive | leafy
+        for i in pre.order_idx[::-1]:  # children before parents
+            if alive[i] and skel.parent[i] >= 0:
+                alive[skel.parent[i]] = True
+    tips = _tips_downstream(skel.parent, pre.order_idx, alive)
 
     share_alive = np.divide(tips, pre.tips_full, out=np.zeros_like(tips), where=pre.tips_full > 0)
     share_total = tips.max() / total
@@ -208,6 +218,8 @@ class Chain:
     radii: np.ndarray    # (k,)
     order: int
     ends_in_tip: bool
+    parent_radius: float = 0.0   # radius of the wood this branch grows out of (0: none)
+    parent_order: int = -1
 
 
 def branch_chains(skel: Skeleton, tree: AgedTree, smooth_passes: int = 2) -> list:
@@ -243,12 +255,15 @@ def branch_chains(skel: Skeleton, tree: AgedTree, smooth_passes: int = 2) -> lis
         radii = np.minimum.accumulate(radii)
 
         p = int(skel.parent[tree.cyl[run[0]]])
+        parent_radius, parent_order = 0.0, -1
         if p in local:
             a, b = tree.start[local[p]], tree.end[local[p]]
             seg = b - a
             t = np.clip(np.dot(points[0] - a, seg) / max(np.dot(seg, seg), 1e-12), 0.0, 1.0)
             points = np.vstack([a + t * seg, points])
             radii = np.concatenate([radii[:1], radii])
+            parent_radius, parent_order = float(tree.radius[local[p]]), int(tree.order[local[p]])
 
-        chains.append(Chain(points, radii, int(tree.order[run[0]]), bool(tree.is_tip[run[-1]])))
+        chains.append(Chain(points, radii, int(tree.order[run[0]]), bool(tree.is_tip[run[-1]]),
+                            parent_radius, parent_order))
     return chains
