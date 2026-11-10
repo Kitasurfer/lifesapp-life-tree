@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument("--leaf-scale", type=float, default=1.8,
                    help="leaf size against the real 11 cm: larger, so single leaves read in a 1080 px frame")
     p.add_argument("--leaves", type=int, default=om.LEAVES_AT_FULL_AGE, help="leaves on the full-age tree")
-    p.add_argument("--gaps", type=float, default=1.0, help="0 = closed shell of foliage, 1 = pads with openings")
+    p.add_argument("--gaps", type=float, default=0.8, help="0 = closed shell of foliage, 1 = pads with openings")
     p.add_argument("--trunk-boost", type=float, default=3.0)
     p.add_argument("--sun", type=float, default=4.5)
     p.add_argument("--sun-from", type=float, nargs=3, default=(-42.0, -34.0, 34.0),

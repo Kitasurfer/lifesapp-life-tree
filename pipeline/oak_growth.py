@@ -73,7 +73,7 @@ def rotate_z(skel: Skeleton, degrees: float) -> Skeleton:
                     skel.order, skel.branch)
 
 
-def straighten(skel: Skeleton, stem_share: float = 0.28, balance: float = 1.12) -> Skeleton:
+def straighten(skel: Skeleton, stem_share: float = 0.28, balance: float = 1.12, tall: float = 1.14) -> Skeleton:
     """Stand the stem on a plumb line and balance the crown over it.
 
     The scanned oak leans: its stem drifts off the base before the first fork. Every height is
@@ -81,6 +81,9 @@ def straighten(skel: Skeleton, stem_share: float = 0.28, balance: float = 1.12) 
     fork), so branches stay attached, the stem becomes a straight column on the z axis, and the
     crown sits over it. The wider side of the crown is then drawn in until left and right are
     within `balance` of each other (the camera looks along +y, so x is left/right in the frame).
+    Last, the whole tree is drawn up by `tall`: the scanned oak is as wide as it is high, and in the
+    app's upright 3:4 frame its width, not its height, set the scale — a taller stem and a deeper
+    crown fill the frame instead of leaving a third of it empty.
     """
     root = int(np.flatnonzero(skel.parent < 0)[0])
     stem = np.flatnonzero(skel.branch == skel.branch[root])
@@ -107,6 +110,8 @@ def straighten(skel: Skeleton, stem_share: float = 0.28, balance: float = 1.12) 
     for pts in (start, tip):
         pts[wide(pts[:, 0]), 0] *= squeeze
 
+    start[:, 2] *= tall
+    tip[:, 2] *= tall
     span = tip - start
     length = np.maximum(np.linalg.norm(span, axis=1), 1e-9)
     return Skeleton(start, span / length[:, None], length, skel.radius, skel.parent, skel.order, skel.branch)

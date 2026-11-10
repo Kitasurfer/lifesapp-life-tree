@@ -22,7 +22,7 @@ import oak_growth as og
 BARK_TILE_M = 0.6           # metres of bark covered by one bark texture tile on thin wood
 BARK_TILE_PER_RADIUS = 0.8  # thick wood: the tile grows with the radius, but stays fine enough to give scale
 LEAF_LENGTH_M = 0.11
-LEAVES_AT_FULL_AGE = 190_000
+LEAVES_AT_FULL_AGE = 260_000
 MIN_TWIG_RADIUS_M = 0.008   # thinner twigs vanish between pixels and leaves seem to float
 BOLE_SHARE = 0.27           # the bole (stem below the main fork) as a share of the tree's height
 
@@ -79,17 +79,17 @@ class StemShape:
     burrs: np.ndarray        # (b, 5): angle, height (in stem radii), angular size, height size, amplitude
 
 
-def stem_shape(seed: int, count: int = 5) -> StemShape:
-    """A few uneven buttress roots. None points straight at the camera (it looks along +y, so the
+def stem_shape(seed: int, count: int = 7) -> StemShape:
+    """Evenly spaced, equally heavy buttress roots: the foot of the stem is symmetric, and mirrored
+    left to right in the frame. None points straight at the camera (it looks along +y, so the
     camera stands at -90 degrees): seen end-on a root is a lump, seen from the side it is a root."""
     rng = np.random.default_rng(seed + 7)
     step = 2 * np.pi / count
-    angles = -np.pi / 2 + step * (np.arange(count) + 0.5) + rng.uniform(-0.2, 0.2, count)
-    strength = rng.uniform(0.5, 1.0, count)
-    strength[int(rng.integers(count))] = 1.0   # one root is always the heavy one
-    bend = rng.uniform(0.12, 0.4, count) * rng.choice([-1.0, 1.0], count)
+    angles = -np.pi / 2 + step * (np.arange(count) + 0.5)
+    strength = np.full(count, 0.85)
+    bend = np.zeros(count)
     burrs = np.stack([rng.uniform(0, 2 * np.pi, 7), rng.uniform(1.0, 5.5, 7), rng.uniform(0.25, 0.5, 7),
-                      rng.uniform(0.3, 0.7, 7), rng.uniform(0.04, 0.10, 7)], axis=1)
+                      rng.uniform(0.3, 0.7, 7), rng.uniform(0.015, 0.04, 7)], axis=1)
     return StemShape(angles, strength, bend, rng.uniform(0, 2 * np.pi, 8), burrs)
 
 
@@ -108,7 +108,7 @@ def _stem_profile(angle: np.ndarray, z: np.ndarray, shape: StemShape) -> np.ndar
     flutes = np.exp(-h / 7.0) * (0.020 * np.cos(7 * angle + ph[0] + 0.15 * h)
                                  + 0.015 * np.cos(11 * angle + ph[1] - 0.11 * h)
                                  + 0.010 * np.cos(17 * angle + ph[2] + 0.07 * h))
-    oval = 0.040 * np.cos(2 * angle + ph[3] + 0.2 * h) + 0.028 * np.cos(3 * angle + ph[4] - 0.3 * h)
+    oval = 0.012 * np.cos(2 * angle + ph[3] + 0.2 * h) + 0.008 * np.cos(3 * angle + ph[4] - 0.3 * h)
     burr = np.zeros_like(angle)
     for a, bh, sa, sh, amp_b in shape.burrs:
         da = np.angle(np.exp(1j * (angle - a)))
@@ -180,6 +180,7 @@ def tube_mesh(chains: list, shape: StemShape, trunk_flare: bool = True) -> MeshD
     verts, quads, uvs, uvs_m, values, seams = [], [], [], [], [], []
     base = 0
     trunk_r0 = max(c.radii[0] for c in chains)
+    tree_height = max(float(c.points[:, 2].max()) for c in chains)
     for c_idx, chain in enumerate(chains):
         r_max = float(chain.radii.max())
         # Every piece of the stem (the scan splits it into several branches) takes the same shape.
@@ -207,6 +208,11 @@ def tube_mesh(chains: list, shape: StemShape, trunk_flare: bool = True) -> MeshD
             for _ in range(int(min(400, (1.2 * r_max / 0.04) ** 2))):
                 points[1:-1] = (points[:-2] + 2.0 * points[1:-1] + points[2:]) / 4.0
             points[[0, -1]] = keep
+        if is_trunk:
+            # The bole is a plumb column: below the main fork its axis is the z axis exactly (the
+            # leader's wander above the fork must not pull the stem aside), then it eases into the leader.
+            ease = _smoothstep((points[:, 2] - BOLE_SHARE * tree_height) / (0.14 * tree_height))
+            points[:, :2] *= ease[:, None]
         radii = _smooth(radii, 200 if thick else 3)
         radii = _collar(points, radii, chain)
         if is_trunk:

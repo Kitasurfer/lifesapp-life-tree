@@ -39,7 +39,7 @@ def main() -> None:
     p.add_argument("--leaf-scale", type=float, default=1.8)
     p.add_argument("--trunk-boost", type=float, default=3.0)
     p.add_argument("--leaves", type=int, default=om.LEAVES_AT_FULL_AGE)
-    p.add_argument("--gaps", type=float, default=1.0)
+    p.add_argument("--gaps", type=float, default=0.8)
     p.add_argument("--no-leaves", action="store_true")
     args = p.parse_args()
 
